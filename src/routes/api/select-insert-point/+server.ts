@@ -17,7 +17,7 @@ function writeLog(content: string) {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
-    const { userQuery, currentTimestamp, contextLines } = await request.json();
+    const { userQuery, currentTimestamp, contextLines, currentIndexInContext } = await request.json();
     
     if (!userQuery) {
         return json({ error: "No query provided" }, { status: 400 });
@@ -39,10 +39,14 @@ export const POST: RequestHandler = async ({ request }) => {
         log(`Determining insertion point for: ${userQuery}`);
         log(`Current timestamp: ${currentTimestamp}s`);
         log(`Context lines: ${contextLines.length}`);
+        log(`Current index in context: ${currentIndexInContext ?? 'unknown'}`);
         
         const contextText = contextLines.map((line: any) => 
             `${line.index}、【${line.seconds.toFixed(1)}秒】${line.speaker}: ${line.content}`
         ).join('\n');
+        
+        // Calculate actual current index, default to middle if not provided
+        const actualCurrentIndex = currentIndexInContext ?? Math.floor(contextLines.length / 2);
         
         const insertPrompt = `**角色** 
 你是一个播客理解大师，擅长理解对话人的语气，非常熟悉对话之间的逻辑。
@@ -61,10 +65,10 @@ export const POST: RequestHandler = async ({ request }) => {
 【编号】
 
 **输入**
-A、上下文（按照时间编号，第10条为用户输入时嘉宾正在说的内容，0-9为上文，11-20为下文）：
+A、上下文（按照时间编号，第${actualCurrentIndex}条为用户输入时嘉宾正在说的内容）：
 ${contextText}
 
-B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1)}秒，当前编号：10）
+B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1)}秒，当前编号：${actualCurrentIndex}）
 
 **输出示例** 
 【17】`;
@@ -74,7 +78,7 @@ B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1
         log(insertPrompt);
         log("===== END OF PROMPT =====");
 
-        let insertAtIndex = 10; // Default to line 10 (current line)
+        let insertAtIndex = actualCurrentIndex; // Default to current line
         
         const insertResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
             method: 'POST',

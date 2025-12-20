@@ -27,6 +27,7 @@ export interface AiInteractionRequest {
         content: string;
         seconds: number;
     }[];
+    currentIndexInContext?: number; // Actual position of current line in context
 }
 
 export interface InsertPointResponse {

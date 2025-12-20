@@ -13,7 +13,8 @@ export async function selectInsertPoint(req: AiInteractionRequest): Promise<Inse
             body: JSON.stringify({
                 userQuery: req.userQuery,
                 currentTimestamp: req.currentTimestamp,
-                contextLines: req.contextLines
+                contextLines: req.contextLines,
+                currentIndexInContext: req.currentIndexInContext
             })
         });
 

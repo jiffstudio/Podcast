@@ -221,14 +221,18 @@
               });
           }
           
-          console.log(`[AI Insert] Current line index: ${currentLineIndex}, context: ${startIdx}-${endIdx}`);
+          // Calculate actual current index in context
+          const currentIndexInContext = currentLineIndex - startIdx;
+          
+          console.log(`[AI Insert] Current line index: ${currentLineIndex}, context: ${startIdx}-${endIdx}, current in context: ${currentIndexInContext}`);
           
           // Step 1: Select insertion point (fast, returns immediately)
           const t1 = Date.now();
           const insertPointResult = await selectInsertPoint({
               currentTimestamp: vTime,
               userQuery: q,
-              contextLines
+              contextLines,
+              currentIndexInContext
           });
           const t2 = Date.now();
           console.log(`[Timing] Insert point selection: ${t2 - t1}ms`);
