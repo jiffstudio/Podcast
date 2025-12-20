@@ -165,11 +165,19 @@
           if (Math.abs(mainAudio.currentTime - targetSourceTime) > 0.2) {
               mainAudio.currentTime = targetSourceTime;
           }
+          // If we're supposed to be playing, ensure mainAudio is playing
+          if ($isPlaying && mainAudio.paused) {
+              mainAudio.play();
+          }
       } else {
           const el = aiAudioElements[block.id];
           if (el) {
               if (Math.abs(el.currentTime - targetSourceTime) > 0.2) {
                   el.currentTime = targetSourceTime;
+              }
+              // If we're supposed to be playing, ensure this AI audio is playing
+              if ($isPlaying && el.paused) {
+                  el.play();
               }
           }
       }
