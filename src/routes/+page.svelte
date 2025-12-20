@@ -158,42 +158,50 @@
       duration = currentGlobal;
   }
 
+  // Update Global Time -> Syncs currentTime based on active segment's audio progress
   function updateTime() {
       const activeSeg = segments[activeSegmentIndex];
       if (!activeSeg) return;
 
       if (activeSeg.type === 'original') {
-          // Sync global time from file time
-          // But ensure we don't go out of bounds of the segment
-          const offset = Math.max(0, Math.min(mainAudio.currentTime - activeSeg.start, activeSeg.duration));
-          currentTime = activeSeg.globalStart + offset;
+          // Map main audio file time to segment relative time
+          const relativeTime = mainAudio.currentTime - activeSeg.start;
+          
+          // Only update if within reasonable bounds (prevent jumping when seeking)
+          if (relativeTime >= -0.5 && relativeTime <= activeSeg.duration + 0.5) {
+             const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
+             currentTime = activeSeg.globalStart + clampedRelative;
+          }
       } else {
-          // AI segment starts at 0
-          const offset = Math.max(0, Math.min(aiAudio.currentTime, activeSeg.duration));
-          currentTime = activeSeg.globalStart + offset;
+          const relativeTime = aiAudio.currentTime;
+          const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
+          currentTime = activeSeg.globalStart + clampedRelative;
       }
   }
 
+  // Check Transition -> Handles moving to next segment when audio ends/reaches boundary
   function checkSegmentTransition() {
       const activeSeg = segments[activeSegmentIndex];
       if (!activeSeg) return;
+
+      // We rely on the audio source's own time to detect end
+      // But we need to check bounds manually for 'original' segments since they are slices
       
-      const timeInSegment = currentTime - activeSeg.globalStart;
-      const timeLeft = activeSeg.duration - timeInSegment;
-      
-      // Transition window
-      if (timeLeft <= 0.15) {
-          if (activeSegmentIndex < segments.length - 1) {
-              addLog(`Transitioning segment ${activeSegmentIndex} -> ${activeSegmentIndex + 1}`);
-              playSegment(activeSegmentIndex + 1);
-          } else if (timeLeft <= 0.05) {
-              isPlaying = false;
-              mainAudio.pause();
-              aiAudio.pause();
+      if (activeSeg.type === 'original') {
+          // Check if mainAudio passed the segment end
+          if (mainAudio.currentTime >= activeSeg.start + activeSeg.duration - 0.1) { // 0.1s tolerance
+               transitionToNext();
+          }
+      } else {
+          // For AI, we can check if it ended or is close to duration
+          if (aiAudio.ended || aiAudio.currentTime >= activeSeg.duration - 0.1) {
+              transitionToNext();
           }
       }
   }
 
+  // index: target segment index
+  // offset: relative time from START of that segment
   function playSegment(index: number, offset: number = 0) {
       if (index < 0 || index >= segments.length) return;
       
@@ -205,9 +213,18 @@
 
       if (segment.type === 'original') {
           currentAudioSource = 'main';
+          // Important: Only pause AI if we are switching sources
           if (prevSource === 'ai') aiAudio.pause();
           
-          mainAudio.currentTime = segment.start + offset;
+          // Seek main audio to: segment start time (in file) + requested offset
+          const targetFileTime = segment.start + offset;
+          
+          // Optimization: Don't seek if we are already close enough (avoid skipping)
+          // Unless it's an explicit seek (offset might change) - actually always seek for safety
+          if (Math.abs(mainAudio.currentTime - targetFileTime) > 0.1) {
+              mainAudio.currentTime = targetFileTime;
+          }
+          
           if (isPlaying) {
               mainAudio.play().catch(e => console.error("Play error:", e));
           }
@@ -219,7 +236,11 @@
               aiAudio.src = segment.audioUrl;
           }
           
-          aiAudio.currentTime = offset;
+          // For AI files, offset is just the time
+          if (Math.abs(aiAudio.currentTime - offset) > 0.1) {
+              aiAudio.currentTime = offset;
+          }
+          
           if (isPlaying) {
               aiAudio.play().catch(e => console.error("Play error:", e));
           }
