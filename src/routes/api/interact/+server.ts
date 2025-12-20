@@ -4,7 +4,7 @@ import { Buffer } from 'buffer';
 
 import type { RequestHandler } from './$types';
 
-// MiniMax T2A V2 API URL (Reference: generate_tim_speech.py)
+// MiniMax T2A V2 API URL
 const T2A_V2_URL = "https://api.minimaxi.com/v1/t2a_v2";
 
 // Voice IDs
@@ -26,12 +26,12 @@ export const POST: RequestHandler = async ({ request }) => {
         debugLogs.push(formattedMsg);
     };
 
-    log(`Processing query: ${userQuery}`);
-
     try {
-        // 1. Generate Script using Doubao
+        log(`Processing query: ${userQuery}`);
+
+        // 1. Generate Script
         const hostText = `说到这里，有个听众问了一个很有意思的问题：“${userQuery}”。Tim你怎么看？`;
-        let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。我们现在的很多选题，如果没有AI的辅助，可能根本无法在有限的时间内完成。";
+        let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。";
         
         try {
             log("Calling Doubao API...");
@@ -46,7 +46,7 @@ export const POST: RequestHandler = async ({ request }) => {
                     messages: [
                         {
                             role: "system",
-                            content: "你现在扮演影视飓风的Tim，一位专业的科技视频创作者。请简短回答用户的问题。回答要口语化，像在播客聊天。50字以内。"
+                            content: "你现在扮演影视飓风的Tim，回答要口语化，像在播客聊天。50字以内。"
                         },
                         {
                             role: "user",
@@ -56,60 +56,49 @@ export const POST: RequestHandler = async ({ request }) => {
                     stream: false
                 })
             });
-            
             const chatData = await chatResp.json();
-            if (chatResp.ok) {
-                if (chatData.choices && chatData.choices[0]) {
-                     timText = chatData.choices[0].message.content;
-                     log("Doubao Success");
-                }
-            } else {
-                log(`Doubao API Error: ${chatData.error?.message || JSON.stringify(chatData)}`);
-                log("Using fallback script text.");
+            if (chatResp.ok && chatData.choices?.[0]) {
+                timText = chatData.choices[0].message.content;
+                log("Doubao Success");
             }
         } catch (e: any) {
-            log(`Doubao Network Error: ${e.message}`);
+            log(`Doubao Error: ${e.message}`);
         }
 
-        // 2. Generate Audio using T2A V2 (Reference: generate_tim_speech.py)
-        log("Generating host audio (T2A V2)...");
-        const hostAudioBuffer = await generateT2A(LUO_VOICE_ID, hostText, log);
-        
-        log("Generating guest audio (T2A V2)...");
-        const timAudioBuffer = await generateT2A(TIM_VOICE_ID, timText, log);
+        // 2. Generate Audio
+        log("Generating audio for both speakers...");
+        const [hostAudio, timAudio] = await Promise.all([
+            generateT2A(LUO_VOICE_ID, hostText, log),
+            generateT2A(TIM_VOICE_ID, timText, log)
+        ]);
 
-        if (!hostAudioBuffer || !timAudioBuffer) {
-            const errorMsg = `Audio generation failed. Host: ${!!hostAudioBuffer}, Guest: ${!!timAudioBuffer}`;
-            log(errorMsg);
-            throw new Error(errorMsg);
+        if (!hostAudio || !timAudio) {
+            throw new Error(`Audio generation failed. Host: ${!!hostAudio}, Guest: ${!!timAudio}`);
         }
 
-        // 3. Concatenate and Return
-        log("Combining audio buffers...");
-        const combinedBuffer = Buffer.concat([hostAudioBuffer, timAudioBuffer]);
-        const base64Audio = combinedBuffer.toString('base64');
-        const audioUrl = `data:audio/mp3;base64,${base64Audio}`;
+        // 3. Combine and return metadata
+        const combinedBuffer = Buffer.concat([hostAudio, timAudio]);
         
-        // Duration estimation: Bitrate 128kbps = 16KB/s
-        const duration = combinedBuffer.length / 16000;
+        // 返回比例，让前端根据真实 duration 拆分
+        const hostRatio = hostAudio.length / combinedBuffer.length;
 
         return json({
-            insertionPoint: currentTimestamp + 1,
-            generatedAudioUrl: audioUrl,
-            generatedDuration: duration,
+            insertionPoint: currentTimestamp + 0.1, // 稍微偏后一点
+            generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
+            hostRatio, // 罗永浩占总时长的比例
             transcript: [
                 {
                     speaker: "罗永浩 (AI)",
                     content: hostText,
                     timestamp: "AI-Gen",
-                    seconds: 0,
+                    relativeSeconds: 0,
                     type: 'generated'
                 },
                 {
                     speaker: "Tim (AI)",
                     content: timText,
                     timestamp: "AI-Gen",
-                    seconds: hostAudioBuffer.length / 16000,
+                    relativeSeconds: hostRatio, // 这是比例占位符
                     type: 'generated'
                 }
             ],
@@ -118,59 +107,31 @@ export const POST: RequestHandler = async ({ request }) => {
 
     } catch (e: any) {
         log(`CRITICAL ERROR: ${e.message}`);
-        return json({ 
-            error: e.message,
-            debugLogs 
-        }, { status: 500 });
+        return json({ error: e.message, debugLogs }, { status: 500 });
     }
 }
 
 async function generateT2A(voiceId: string, text: string, log: Function): Promise<Buffer | null> {
     try {
-        log(`Calling MiniMax T2A V2 for voice ${voiceId}...`);
         const resp = await fetch(T2A_V2_URL, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${MINIMAX_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Authorization': `Bearer ${MINIMAX_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 model: "speech-2.6-hd",
-                text: text,
+                text,
                 stream: false,
-                voice_setting: {
-                    voice_id: voiceId,
-                    speed: 1,
-                    vol: 1,
-                    pitch: 0
-                },
-                audio_setting: {
-                    sample_rate: 32000,
-                    bitrate: 128000,
-                    format: "mp3",
-                    channel: 1
-                }
+                voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 0 },
+                audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 }
             })
         });
-
         const data = await resp.json();
-        
-        if (!resp.ok || data.base_resp?.status_code !== 0) {
-            log(`T2A V2 API Error for ${voiceId}: ${JSON.stringify(data.base_resp || data)}`);
-            return null;
-        }
-
-        // Handle hex-encoded audio as seen in generate_tim_speech.py
-        if (data.data?.audio) {
-            log(`Success: Received hex-encoded audio for ${voiceId}`);
+        if (resp.ok && data.data?.audio) {
             return Buffer.from(data.data.audio, 'hex');
         }
-
-        log(`No audio data found in T2A V2 response for ${voiceId}: ${JSON.stringify(data)}`);
+        log(`T2A API Error for ${voiceId}: ${JSON.stringify(data)}`);
         return null;
-
     } catch (e: any) {
-        log(`T2A V2 Network Error for ${voiceId}: ${e.message}`);
+        log(`T2A Network Error: ${e.message}`);
         return null;
     }
 }

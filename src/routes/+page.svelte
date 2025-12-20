@@ -62,52 +62,74 @@
   onMount(() => {
     if (mainAudio) {
       if (mainAudio.readyState >= 1) {
-          // Metadata already loaded
           const d = mainAudio.duration;
           segments[0].duration = d;
           recalculateGlobalTimeline();
-          segments = segments; // Trigger reactivity
+          segments = segments;
       }
 
-      mainAudio.addEventListener('loadedmetadata', () => {
+      mainAudio.onloadedmetadata = () => {
         const d = mainAudio.duration;
         segments[0].duration = d;
         recalculateGlobalTimeline();
-        segments = segments; // Trigger reactivity
-      });
+        segments = segments;
+      };
       
-      mainAudio.addEventListener('timeupdate', () => {
+      mainAudio.ontimeupdate = () => {
         if (currentAudioSource === 'main') {
             updateGlobalTimeFromMain();
             checkSegmentTransition();
         }
-      });
-      
-      mainAudio.addEventListener('ended', () => {
-        if (currentAudioSource === 'main') {
-             // Simplification: Check if we are at the very end of the global timeline
-             if (Math.abs(currentTime - duration) < 1) {
-                isPlaying = false;
-             }
-        }
-      });
+      };
     }
 
     if (aiAudio) {
-        aiAudio.addEventListener('timeupdate', () => {
+        aiAudio.onloadedmetadata = () => {
+            // 当 AI 音频真实长度加载出来后，更新段落长度并重排时间轴
+            const actualDuration = aiAudio.duration;
+            const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
+            if (aiSegIndex !== -1) {
+                const oldDuration = segments[aiSegIndex].duration;
+                segments[aiSegIndex].duration = actualDuration;
+                
+                // 获取服务器传回的比例，更新字幕时间
+                const diff = actualDuration - oldDuration;
+                
+                // 重新计算受影响的字幕时间
+                recalculateGlobalTimeline();
+                const globalStart = segments[aiSegIndex].globalStart;
+                
+                // 这里我们要找到这一段 AI 插入对应的两条字幕并更新它们
+                // 简单的做法是找到所有 type === 'generated' 且在当前段落范围内的字幕
+                transcript = transcript.map(line => {
+                    if (line.type === 'generated' && line.seconds >= globalStart - 1 && line.seconds <= globalStart + oldDuration + 1) {
+                        // 重新根据比例分配
+                        const isTim = line.speaker.includes("Tim");
+                        if (isTim) {
+                            // Tim 的时间 = 起点 + 罗永浩的部分
+                            // 我们在 API 返回中存了比例在 line 对象里（临时）
+                            return { ...line, seconds: globalStart + (actualDuration * (line.relativeSeconds || 0)) };
+                        } else {
+                            return { ...line, seconds: globalStart };
+                        }
+                    }
+                    // 修正后续所有字幕的偏移
+                    if (line.seconds > globalStart + oldDuration + 0.5) {
+                        return { ...line, seconds: line.seconds + diff };
+                    }
+                    return line;
+                });
+                
+                segments = segments;
+            }
+        };
+
+        aiAudio.ontimeupdate = () => {
             if (currentAudioSource === 'ai') {
                 updateGlobalTimeFromAi();
                 checkSegmentTransition();
             }
-        });
-        
-        aiAudio.addEventListener('ended', () => {
-             // Handled by checkSegmentTransition normally, but as backup:
-             const currentSegIndex = segments.findIndex(s => currentTime >= s.globalStart && currentTime < s.globalStart + s.duration);
-             if (currentSegIndex !== -1 && currentSegIndex < segments.length - 1) {
-                 playSegment(currentSegIndex + 1);
-             }
-        });
+        };
     }
   });
   
@@ -273,22 +295,14 @@
           recalculateGlobalTimeline();
           segments = segments; // Trigger reactivity update after mutation
           
-          // 2. Insert and Shift Transcript
-          // Shift all existing lines after insertion point
-          const aiDuration = response.generatedDuration;
-          
-          // Transcript lines need to be shifted if they are after the insertion point
-          transcript = transcript.map(line => {
-              if (line.seconds > insertionPointGlobal) {
-                  return { ...line, seconds: line.seconds + aiDuration };
-              }
-              return line;
-          });
-          
           // Insert new lines
+          const aiDuration = response.generatedDuration || 5; // 初始占位时长
+          
+          // Insert new lines with relative positions
           const newLines = response.transcript.map(l => ({
               ...l,
-              seconds: insertionPointGlobal + l.seconds // Relative to start of AI segment
+              relativeSeconds: l.relativeSeconds, // 保存比例
+              seconds: insertionPointGlobal + (aiDuration * (l.relativeSeconds || 0))
           }));
           
           // Find index to insert in transcript array
