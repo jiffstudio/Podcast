@@ -307,11 +307,17 @@
               // But AI internal lines should be recalculated from relativeStart
               const originalInsertAt = segStart; // This is where AI was inserted
               
+              console.log(`[Duration Correction] segStart=${segStart.toFixed(2)}, oldSegEnd=${oldSegEnd.toFixed(2)}, newSegEnd=${newSegEnd.toFixed(2)}, diff=${diff.toFixed(2)}, expectedDuration=${expectedDuration.toFixed(2)}`);
+              
               transcript.update(ts => {
-                  const updated = ts.map(l => {
+                  console.log('[Duration Correction] Before:', ts.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+                  
+                  const updated = ts.map((l, idx) => {
                       // If this is an AI line with relativeStart, recalculate from actual duration
                       if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds <= oldSegEnd + 0.1) {
-                          return { ...l, seconds: segStart + l.relativeStart };
+                          const newSeconds = segStart + l.relativeStart;
+                          console.log(`[Duration Correction] AI internal ${idx}: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (relativeStart=${l.relativeStart.toFixed(2)})`);
+                          return { ...l, seconds: newSeconds };
                       }
                       // If this is an ORIGINAL line that was shifted during insertion
                       // It should be shifted again by the duration correction
@@ -322,14 +328,22 @@
                           const originalPos = l.seconds - expectedDuration;
                           // If it was originally >= insertAt, it needs correction
                           if (originalPos >= originalInsertAt - 0.1) {
-                              return { ...l, seconds: l.seconds + diff };
+                              const newSeconds = l.seconds + diff;
+                              if (idx < 10) console.log(`[Duration Correction] Original ${idx}: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (originalPos=${originalPos.toFixed(2)})`);
+                              return { ...l, seconds: newSeconds };
                           }
                       }
                       return l;
                   });
                   
+                  console.log('[Duration Correction] After correction (before sort):', updated.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+                  
                   // Sort by seconds to maintain order
-                  return updated.sort((a, b) => a.seconds - b.seconds);
+                  const sorted = updated.sort((a, b) => a.seconds - b.seconds);
+                  
+                  console.log('[Duration Correction] After sort:', sorted.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+                  
+                  return sorted;
               });
           }
       };
