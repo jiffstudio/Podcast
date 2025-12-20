@@ -6,325 +6,248 @@
   import transcriptData from '$lib/transcript.json';
   import { handleUserQuery } from '$lib/api';
   import { 
-    blocks, transcript, currentTime, duration, isPlaying, 
+    segments, transcript, virtualTime, totalDuration, isPlaying, 
     playbackSpeed, userQuery, isThinking, showInput,
-    recalcGlobals, type TimelineBlock 
+    findSegmentAt, insertAISegment, type Segment 
   } from '$lib/stores/player';
 
-  // --- Audio State ---
+  // --- Audio Elements ---
   let mainAudio: HTMLAudioElement;
-  // Map of generated block ID -> Audio Element
-  let aiAudioElements: Record<string, HTMLAudioElement> = {};
+  let aiAudios: Record<string, HTMLAudioElement> = {};
+
+  // --- State ---
+  let currentSegment: Segment | undefined;
+  let activeAudioId: string = '';
+  let lastVirtualTime = 0;
 
   // --- Initialization ---
   onMount(() => {
-    // Initialize Stores
-    const lines = transcriptData.map(t => ({ ...t, type: 'original' as const }));
-    transcript.set(lines);
+    transcript.set(transcriptData.map(t => ({ ...t, type: 'original' as const })));
     
-    // Main Audio Setup
     if (mainAudio) {
         mainAudio.onloadedmetadata = () => {
-            if ($blocks.length === 0) {
-                const d = mainAudio.duration;
-                if (isFinite(d)) {
-                    // Create ONE block for the entire original audio
-                    blocks.set([{
-                        id: 'main-audio',
-                        type: 'original' as const,
-                        globalStart: 0,
-                        duration: d,
-                        sourceStart: 0,
-                        audioUrl: 'main',
-                        color: 'bg-emerald-500'
-                    }]);
-                    duration.set(d);
-                }
+            const d = mainAudio.duration;
+            if (isFinite(d) && $segments.length === 0) {
+                // Initialize with single segment for entire audio
+                segments.set([{
+                    id: 'main',
+                    type: 'original',
+                    virtualStart: 0,
+                    virtualEnd: d,
+                    audioId: 'main',
+                    sourceStart: 0,
+                    sourceEnd: d,
+                    color: 'bg-emerald-500'
+                }]);
+                totalDuration.set(d);
             }
         };
-        mainAudio.ontimeupdate = () => syncVirtualTime(mainAudio, 'original');
-        mainAudio.onended = checkTransition;
+        
+        mainAudio.ontimeupdate = () => {
+            if (!$isPlaying || activeAudioId !== 'main') return;
+            updateVirtualTimeFromAudio('main', mainAudio.currentTime);
+        };
+        
+        mainAudio.onended = () => transitionToNext();
     }
-    
-    // Subscribe to store changes to drive audio
-    const unsubTime = currentTime.subscribe(() => {
-        // We sync real player when *seeking* (large jumps) or playback starts
-        // But we don't want to cause loops during normal playback
-        // For now, let's rely on the store update being the "Virtual Player" tick
-        // And we just check sync occasionally or on specific actions
-    });
-    
-    // Driver: Store -> Audio
-    // We react to block changes or seek events
-    return () => {
-        unsubTime();
-    };
   });
-  
-  // Reactive Sync: When currentTime changes significantly (seek) or Active Block changes, sync audio
-  let lastSyncTime = -1;
-  let lastActiveBlockId = "";
 
-  $: {
-      const time = $currentTime;
-      const blks = $blocks;
-      const playing = $isPlaying;
-      const speed = $playbackSpeed;
-
-      // Find active block
-      const activeBlock = blks.find(b => time >= b.globalStart && time < b.globalStart + b.duration);
+  // --- Core Logic: Sync Virtual Time from Audio Playback ---
+  function updateVirtualTimeFromAudio(audioId: string, audioTime: number) {
+      const seg = currentSegment;
+      if (!seg || seg.audioId !== audioId) return;
       
-      // Check if we need to switch source or seek
-      const needsSeek = Math.abs(time - lastSyncTime) > 0.5; // Threshold for "seek" vs "tick"
+      const offset = audioTime - seg.sourceStart;
+      const newVirtualTime = seg.virtualStart + offset;
+      
+      if (newVirtualTime >= seg.virtualEnd - 0.1) {
+          transitionToNext();
+      } else {
+          virtualTime.set(newVirtualTime);
+      }
+  }
 
-      if (activeBlock) {
-          // Sync Playback Rate
-          if (mainAudio) mainAudio.playbackRate = speed;
-          Object.values(aiAudioElements).forEach(el => el.playbackRate = speed);
-
-          const blockChanged = activeBlock.id !== lastActiveBlockId;
+  // --- Core Logic: Play Correct Audio at Virtual Time ---
+  function syncAudioToVirtualTime(vTime: number, force = false) {
+      const seg = findSegmentAt(vTime);
+      if (!seg) return;
+      
+      const segmentChanged = !currentSegment || seg.id !== currentSegment.id;
+      currentSegment = seg;
+      
+      if (segmentChanged || force) {
+          console.log(`[Play] Segment ${seg.id} (${seg.type})`);
+          activeAudioId = seg.audioId;
           
-          if (needsSeek || blockChanged) {
-              syncRealPlayer(activeBlock, time);
-          }
+          // Pause all audio
+          if (mainAudio) mainAudio.pause();
+          Object.values(aiAudios).forEach(a => a.pause());
           
-          // Sync Play/Pause State
-          if (playing) {
-              if (activeBlock.type === 'original') {
-                  if (mainAudio && mainAudio.paused) mainAudio.play();
-                  pauseAllAi();
-              } else {
-                  const el = aiAudioElements[activeBlock.id];
-                  if (el && el.paused) el.play();
-                  if (mainAudio) mainAudio.pause();
-                  // Pause other AIs
-                  Object.entries(aiAudioElements).forEach(([id, audio]) => {
-                      if (id !== activeBlock.id) audio.pause();
-                  });
-              }
+          // Calculate source position
+          const offset = vTime - seg.virtualStart;
+          const sourceTime = seg.sourceStart + offset;
+          
+          // Play the correct audio
+          if (seg.audioId === 'main') {
+              mainAudio.currentTime = sourceTime;
+              if ($isPlaying) mainAudio.play();
           } else {
-              if (mainAudio) mainAudio.pause();
-              pauseAllAi();
-          }
-
-          lastActiveBlockId = activeBlock.id;
-      } else {
-           // No active block found, but still handle play/pause
-           if (playing && mainAudio && mainAudio.paused) {
-               mainAudio.play();
-           } else if (!playing && mainAudio && !mainAudio.paused) {
-               mainAudio.pause();
-           }
-           
-           if (time >= $duration && $duration > 0) {
-               isPlaying.set(false);
-           }
-      }
-       
-       // Update tracker (careful not to loop)
-       if (!needsSeek) lastSyncTime = time; 
-  }
-
-  function pauseAllAi() {
-      Object.values(aiAudioElements).forEach(el => el.pause());
-  }
-
-  // Driven by Audio Elements -> Update Store
-  function syncVirtualTime(el: HTMLAudioElement, type: 'original' | 'generated', blockId?: string) {
-      if (!$isPlaying) return; // Ignore updates if we think we are paused
-
-      const time = $currentTime;
-      const blks = $blocks;
-      
-      // Find the block that *should* be playing
-      const currentBlock = blks.find(b => time >= b.globalStart && time < b.globalStart + b.duration);
-
-      if (currentBlock && currentBlock.type === type) {
-           // Extra check for AI: ensure it's the specific block
-           if (type === 'generated' && blockId && currentBlock.id !== blockId) return;
-
-           const localTime = el.currentTime;
-           const newGlobal = currentBlock.globalStart + (localTime - currentBlock.sourceStart);
-           
-           if (Math.abs(newGlobal - time) > 0.05) {
-               currentTime.set(newGlobal);
-               lastSyncTime = newGlobal; // Update tracker so we don't trigger seek
-               console.log(`[Time] ${newGlobal.toFixed(2)}s | Block: ${currentBlock.id} (${currentBlock.type})`);
-           }
-           
-           if (localTime >= currentBlock.sourceStart + currentBlock.duration - 0.1) {
-               checkTransition();
-           }
-       }
-  }
-
-  function syncRealPlayer(block: TimelineBlock, globalTime: number) {
-      const localOffset = globalTime - block.globalStart;
-      const targetSourceTime = block.sourceStart + localOffset;
-      
-      console.log(`[Sync] ${block.type} (${block.id}) -> ${targetSourceTime.toFixed(2)}s`);
-
-      if (block.type === 'original') {
-          if (Math.abs(mainAudio.currentTime - targetSourceTime) > 0.2) {
-              mainAudio.currentTime = targetSourceTime;
-          }
-          // If we're supposed to be playing, ensure mainAudio is playing
-          if ($isPlaying && mainAudio.paused) {
-              mainAudio.play();
-          }
-      } else {
-          const el = aiAudioElements[block.id];
-          if (el) {
-              if (Math.abs(el.currentTime - targetSourceTime) > 0.2) {
-                  el.currentTime = targetSourceTime;
-              }
-              // If we're supposed to be playing, ensure this AI audio is playing
-              if ($isPlaying && el.paused) {
-                  el.play();
+              const aiAudio = aiAudios[seg.audioId];
+              if (aiAudio) {
+                  aiAudio.currentTime = sourceTime;
+                  if ($isPlaying) aiAudio.play();
               }
           }
       }
   }
 
-  function checkTransition() {
-      const time = $currentTime;
-      const blks = $blocks;
-      const idx = blks.findIndex(b => time >= b.globalStart && time < b.globalStart + b.duration);
+  // --- Transition to Next Segment ---
+  function transitionToNext() {
+      const segs = $segments;
+      const idx = segs.findIndex(s => s.id === currentSegment?.id);
       
-      if (idx !== -1 && idx < blks.length - 1) {
-          const next = blks[idx + 1];
-          console.log(`[Transition] From ${blks[idx].id} to ${next.id} (${next.globalStart.toFixed(2)}s)`);
-          // Just jump to next block start
-          currentTime.set(next.globalStart);
-          // Reactivity will handle syncRealPlayer
+      if (idx !== -1 && idx < segs.length - 1) {
+          virtualTime.set(segs[idx + 1].virtualStart);
       } else {
-          console.log("[Transition] End");
           isPlaying.set(false);
       }
   }
 
-  // --- Logic: Ask Question (Pure Logic) ---
+  // --- Reactive: Sync on Virtual Time or Play State Change ---
+  $: {
+      const vTime = $virtualTime;
+      const playing = $isPlaying;
+      const speed = $playbackSpeed;
+      
+      const jumped = Math.abs(vTime - lastVirtualTime) > 0.5;
+      lastVirtualTime = vTime;
+      
+      if (jumped || !currentSegment) {
+          syncAudioToVirtualTime(vTime, true);
+      }
+      
+      // Sync play/pause
+      if (playing) {
+          if (activeAudioId === 'main' && mainAudio?.paused) {
+              mainAudio.play();
+          } else if (activeAudioId !== 'main') {
+              const aiAudio = aiAudios[activeAudioId];
+              if (aiAudio?.paused) aiAudio.play();
+          }
+      } else {
+          if (mainAudio) mainAudio.pause();
+          Object.values(aiAudios).forEach(a => a.pause());
+      }
+      
+      // Sync speed
+      if (mainAudio) mainAudio.playbackRate = speed;
+      Object.values(aiAudios).forEach(a => a.playbackRate = speed);
+  }
+
+  // --- Handle AI Insertion ---
   async function handleAskQuestion() {
       const q = $userQuery;
       if (!q.trim()) return;
+      
       isThinking.set(true);
       showInput.set(false);
       
       try {
-           const time = $currentTime;
-           const lines = $transcript;
-           const blks = $blocks;
-           
-           // Find the current line
-           const activeLine = lines.find((l, i) => {
-               const nextLine = lines[i + 1];
-               return time >= l.seconds && (!nextLine || time < nextLine.seconds);
-           });
-           
-           // Insert after current line finishes
-           let insertAt = time;
-           if (activeLine) {
-               const activeIndex = lines.indexOf(activeLine);
-               const nextLine = lines[activeIndex + 1];
-               if (nextLine) {
-                   insertAt = nextLine.seconds; // Insert at start of next line
-               } else {
-                   insertAt = $duration; // End of podcast
-               }
-           }
-
-           console.log(`[Insert] User asked at ${time.toFixed(2)}, inserting at ${insertAt.toFixed(2)}`);
-
-           const response = await handleUserQuery({
-               currentTimestamp: insertAt,
-               userQuery: q
-           });
-           
-           // Create AI block
-           const aiBlock: TimelineBlock = {
-               id: `ai-${Date.now()}`,
-               type: 'generated',
-               globalStart: insertAt, // Will be recalculated
-               duration: response.generatedDuration,
-               sourceStart: 0,
-               audioUrl: response.generatedAudioUrl,
-               color: 'bg-indigo-500'
-           };
-
-           // Split the block at insertAt and insert AI
-           blocks.update(currentBlocks => {
-               const targetIdx = currentBlocks.findIndex(b => 
-                   insertAt >= b.globalStart && insertAt < b.globalStart + b.duration
-               );
-               
-               if (targetIdx === -1) {
-                   // Insert at end
-                   return [...currentBlocks, aiBlock];
-               }
-               
-               const target = currentBlocks[targetIdx];
-               
-               // Only split if it's an original block
-               if (target.type === 'original') {
-                   const offset = insertAt - target.globalStart;
-                   
-                   const pre: TimelineBlock = {
-                       ...target,
-                       id: target.id + '-pre',
-                       duration: offset
-                   };
-                   
-                   const post: TimelineBlock = {
-                       ...target,
-                       id: target.id + '-post',
-                       sourceStart: target.sourceStart + offset,
-                       duration: target.duration - offset
-                   };
-                   
-                   const newBlocks = [...currentBlocks];
-                   const replacement = [];
-                   if (pre.duration > 0.05) replacement.push(pre);
-                   replacement.push(aiBlock);
-                   if (post.duration > 0.05) replacement.push(post);
-                   
-                   newBlocks.splice(targetIdx, 1, ...replacement);
-                   return newBlocks;
-               } else {
-                   // AI block, insert after it
-                   const newBlocks = [...currentBlocks];
-                   newBlocks.splice(targetIdx + 1, 0, aiBlock);
-                   return newBlocks;
-               }
-           });
-           
-           recalcGlobals();
-           
-           console.log('[Blocks After Insert]', $blocks.map(b => `${b.id}(${b.type}): ${b.globalStart.toFixed(2)}-${(b.globalStart + b.duration).toFixed(2)}s`));
-           
-           // Update Transcript: shift all lines after insertAt
-           const newLines = response.transcript.map((l: any) => ({
-               ...l,
-               seconds: insertAt + (l.relativeStart || 0),
-               type: 'generated' as const
-           }));
-           
-           transcript.update(ts => {
-               const shifted = ts.map(l => {
-                   if (l.seconds >= insertAt) {
-                       return { ...l, seconds: l.seconds + response.generatedDuration };
-                   }
-                   return l;
-               });
-               const idx = shifted.findIndex(t => t.seconds >= insertAt);
-               if (idx === -1) return [...shifted, ...newLines];
-               
-               const final = [...shifted];
-               final.splice(idx, 0, ...newLines);
-               return final;
-           });
-           
-           userQuery.set("");
-
+          const vTime = $virtualTime;
+          const lines = $transcript;
+          
+          // Find insertion point (end of current sentence)
+          const activeLine = lines.find((l, i) => {
+              const nextLine = lines[i + 1];
+              return vTime >= l.seconds && (!nextLine || vTime < nextLine.seconds);
+          });
+          
+          let insertAt = vTime;
+          if (activeLine) {
+              const activeIndex = lines.indexOf(activeLine);
+              const nextLine = lines[activeIndex + 1];
+              insertAt = nextLine ? nextLine.seconds : $totalDuration;
+          }
+          
+          console.log(`[AI Insert] At virtual time ${insertAt.toFixed(2)}s`);
+          
+          const response = await handleUserQuery({
+              currentTimestamp: insertAt,
+              userQuery: q
+          });
+          
+          const aiId = `ai-${Date.now()}`;
+          const aiDuration = response.generatedDuration;
+          
+          // Insert AI segment into timeline
+          insertAISegment(insertAt, aiId, aiDuration);
+          
+          // Update transcript
+          const newLines = response.transcript.map((l: any) => ({
+              ...l,
+              seconds: insertAt + (l.relativeStart || 0),
+              type: 'generated' as const
+          }));
+          
+          transcript.update(ts => {
+              const shifted = ts.map(l => 
+                  l.seconds >= insertAt 
+                      ? { ...l, seconds: l.seconds + aiDuration }
+                      : l
+              );
+              const idx = shifted.findIndex(t => t.seconds >= insertAt);
+              if (idx === -1) return [...shifted, ...newLines];
+              
+              const result = [...shifted];
+              result.splice(idx, 0, ...newLines);
+              return result;
+          });
+          
+          // Store audio URL for later binding
+          aiAudios[aiId] = null as any; // Will be bound by Svelte
+          setTimeout(() => {
+              const audio = document.getElementById(`audio-${aiId}`) as HTMLAudioElement;
+              if (audio) {
+                  aiAudios[aiId] = audio;
+                  audio.onloadedmetadata = () => {
+                      // Update duration if needed
+                      const realDuration = audio.duration;
+                      if (isFinite(realDuration) && Math.abs(realDuration - aiDuration) > 0.1) {
+                          console.log(`[AI Audio] Correcting duration: ${aiDuration.toFixed(2)} -> ${realDuration.toFixed(2)}`);
+                          segments.update(segs => {
+                              const seg = segs.find(s => s.id === aiId);
+                              if (seg) {
+                                  const diff = realDuration - aiDuration;
+                                  seg.virtualEnd += diff;
+                                  seg.sourceEnd = realDuration;
+                                  // Shift all subsequent segments
+                                  const idx = segs.indexOf(seg);
+                                  for (let i = idx + 1; i < segs.length; i++) {
+                                      segs[i].virtualStart += diff;
+                                      segs[i].virtualEnd += diff;
+                                  }
+                                  totalDuration.update(d => d + diff);
+                              }
+                              return [...segs];
+                          });
+                          transcript.update(ts => ts.map(l => 
+                              l.seconds > insertAt ? { ...l, seconds: l.seconds + (realDuration - aiDuration) } : l
+                          ));
+                      }
+                  };
+                  audio.ontimeupdate = () => {
+                      if (!$isPlaying || activeAudioId !== aiId) return;
+                      updateVirtualTimeFromAudio(aiId, audio.currentTime);
+                  };
+                  audio.onended = () => transitionToNext();
+              }
+          }, 100);
+          
+          // Preload AI audio
+          const audio = new Audio(response.generatedAudioUrl);
+          audio.preload = 'auto';
+          
+          userQuery.set("");
       } catch (e: any) {
           alert(e.message);
       } finally {
@@ -332,28 +255,9 @@
       }
   }
 
-  // --- Metadata Handler for Dynamic AI Audio ---
-  function onAiLoaded(id: string) {
-      const el = aiAudioElements[id];
-      if (!el) return;
-      const realDur = el.duration;
-      if (!isFinite(realDur)) return;
-
-      blocks.update(blks => {
-          const b = blks.find(x => x.id === id);
-          if (b && Math.abs(b.duration - realDur) > 0.1) {
-              console.log(`[Metadata] Correcting ${id}: ${b.duration} -> ${realDur}`);
-              b.duration = realDur;
-              return [...blks]; // Trigger update
-          }
-          return blks;
-      });
-      recalcGlobals();
-  }
-
-  // --- Interactions ---
+  // --- UI Interactions ---
   const togglePlay = () => isPlaying.update(v => !v);
-  const seek = (time: number) => currentTime.set(Math.max(0, Math.min($duration, time)));
+  const seek = (time: number) => virtualTime.set(Math.max(0, Math.min($totalDuration, time)));
   const changeSpeed = () => {
     const speeds = [1.0, 1.25, 1.5, 2.0, 0.5];
     playbackSpeed.update(s => speeds[(speeds.indexOf(s) + 1) % speeds.length]);
@@ -362,17 +266,15 @@
 
 <div class="flex flex-col h-screen bg-[#1a2e1a] text-[#e0f0e0] font-sans overflow-hidden select-none">
   
+  <!-- Main Audio -->
   <audio bind:this={mainAudio} src="/podcast.mp3" preload="metadata"></audio>
   
-  <!-- Dynamic AI Audio Pool -->
-  {#each $blocks.filter(b => b.type === 'generated') as block (block.id)}
+  <!-- AI Audio Pool -->
+  {#each $segments.filter(s => s.type === 'ai') as seg (seg.id)}
       <audio 
-          src={block.audioUrl} 
-          bind:this={aiAudioElements[block.id]}
+          id="audio-{seg.id}"
+          src={seg.audioId}
           preload="auto"
-          on:loadedmetadata={() => onAiLoaded(block.id)}
-          on:timeupdate={(e) => syncVirtualTime(e.currentTarget, 'generated', block.id)}
-          on:ended={checkTransition}
       ></audio>
   {/each}
 

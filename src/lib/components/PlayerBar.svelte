@@ -2,8 +2,8 @@
   import { tick } from 'svelte';
   import { Play, Pause, RotateCw, RotateCcw, Send, Sparkles, X } from 'lucide-svelte';
   import { 
-    currentTime, duration, isPlaying, playbackSpeed, 
-    blocks, userQuery, showInput, progress
+    virtualTime, totalDuration, isPlaying, playbackSpeed, 
+    segments, userQuery, showInput, progress
   } from '$lib/stores/player';
 
   export let onTogglePlay: () => void;
@@ -30,7 +30,7 @@
     const rect = target.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const percentage = clickX / rect.width;
-    onSeek($duration * percentage);
+    onSeek($totalDuration * percentage);
   }
 </script>
 
@@ -46,33 +46,31 @@
     tabindex="0"
   >
     <span class="text-xs font-mono w-10 text-right opacity-60">
-      {formatTime($currentTime)}
+      {formatTime($virtualTime)}
     </span>
     
     <div class="flex-1 h-2 bg-white/10 rounded-full relative overflow-hidden">
-      <!-- Blocks Visualization -->
-      {#each $blocks as b}
+      <!-- Segments Visualization -->
+      {#each $segments as seg}
         <div 
-          class="absolute top-0 bottom-0 {b.color} opacity-30 border-r border-black/10" 
-          style="left: {b.globalStart/$duration*100}%; width: {b.duration/$duration*100}%"
+          class="absolute top-0 bottom-0 {seg.color} opacity-30 border-r border-black/10" 
+          style="left: {seg.virtualStart/$totalDuration*100}%; width: {(seg.virtualEnd - seg.virtualStart)/$totalDuration*100}%"
         ></div>
       {/each}
       
       <!-- Playhead -->
-      {#each [$blocks.find(b => $currentTime >= b.globalStart && $currentTime < b.globalStart + b.duration)] as currentBlock}
-        <div 
-          class="absolute top-0 bottom-0 bg-emerald-500 w-1 transition-all"
-          style="left: {$progress}%"
-        >
-          {#if currentBlock?.type === 'generated'}
-            <div class="absolute -top-1 -bottom-1 -left-1 -right-1 bg-indigo-500 blur-sm"></div>
-          {/if}
-        </div>
-      {/each}
+      <div 
+        class="absolute top-0 bottom-0 bg-emerald-500 w-1 transition-all"
+        style="left: {$progress}%"
+      >
+        {#if $segments.find(s => $virtualTime >= s.virtualStart && $virtualTime < s.virtualEnd)?.type === 'ai'}
+          <div class="absolute -top-1 -bottom-1 -left-1 -right-1 bg-indigo-500 blur-sm"></div>
+        {/if}
+      </div>
     </div>
     
     <span class="text-xs font-mono w-10 opacity-60">
-      {formatTime($duration)}
+      {formatTime($totalDuration)}
     </span>
   </div>
 
@@ -98,7 +96,7 @@
 
     <!-- Playback -->
     <div class="flex gap-8 items-center justify-center flex-1">
-      <button on:click={() => onSeek($currentTime - 15)}>
+      <button on:click={() => onSeek($virtualTime - 15)}>
         <RotateCcw class="w-6 h-6 opacity-80 hover:scale-110 transition" />
       </button>
       
@@ -113,7 +111,7 @@
         {/if}
       </button>
       
-      <button on:click={() => onSeek($currentTime + 30)}>
+      <button on:click={() => onSeek($virtualTime + 30)}>
         <RotateCw class="w-6 h-6 opacity-80 hover:scale-110 transition" />
       </button>
     </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Sparkles } from 'lucide-svelte';
-  import { transcript, currentTime, activeLineIndex, isThinking } from '$lib/stores/player';
+  import { transcript, virtualTime, activeLineIndex, isThinking } from '$lib/stores/player';
 
   export let onSeek: (time: number) => void;
 
