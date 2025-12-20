@@ -57,12 +57,18 @@
   let lastLoggedVTime = -1;
   function updateVirtualTimeFromAudio(audioId: string, audioTime: number) {
       const seg = currentSegment;
-      if (!seg || seg.audioId !== audioId) return;
+      if (!seg || seg.audioId !== audioId) {
+          console.log(`[updateVirtualTime] Mismatch: currentSegment=${currentSegment?.audioId}, audioId=${audioId}`);
+          return;
+      }
       
       const offset = audioTime - seg.sourceStart;
       const newVirtualTime = seg.virtualStart + offset;
       
+      console.log(`[updateVirtualTime] ${audioId}: audioTime=${audioTime.toFixed(2)}, sourceStart=${seg.sourceStart.toFixed(2)}, offset=${offset.toFixed(2)}, newVTime=${newVirtualTime.toFixed(2)}, segEnd=${seg.virtualEnd.toFixed(2)}`);
+      
       if (newVirtualTime >= seg.virtualEnd - 0.1) {
+          console.log(`[updateVirtualTime] Triggering transition: ${newVirtualTime.toFixed(2)} >= ${(seg.virtualEnd - 0.1).toFixed(2)}`);
           transitionToNext();
       } else {
           virtualTime.set(newVirtualTime);
