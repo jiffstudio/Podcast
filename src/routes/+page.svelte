@@ -154,6 +154,7 @@
            if (Math.abs(newGlobal - time) > 0.05) {
                currentTime.set(newGlobal);
                lastSyncTime = newGlobal; // Update tracker so we don't trigger seek
+               console.log(`[Time] ${newGlobal.toFixed(2)}s | Block: ${currentBlock.id} (${currentBlock.type})`);
            }
            
            if (localTime >= currentBlock.sourceStart + currentBlock.duration - 0.1) {

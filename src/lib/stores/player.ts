@@ -40,10 +40,14 @@ export const progress = derived(
 export const activeLineIndex = derived(
     [currentTime, transcript],
     ([$currentTime, $transcript]) => {
-        return $transcript.findIndex((line, i) => {
+        const idx = $transcript.findIndex((line, i) => {
             const nextLine = $transcript[i + 1];
             return $currentTime >= line.seconds && (!nextLine || $currentTime < nextLine.seconds);
         });
+        if (idx !== -1) {
+            console.log(`[Highlight] Line ${idx}: ${$transcript[idx].speaker} at ${$transcript[idx].seconds}s (currentTime: ${$currentTime.toFixed(2)}s)`);
+        }
+        return idx;
     }
 );
 
