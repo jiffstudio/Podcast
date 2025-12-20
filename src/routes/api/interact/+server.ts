@@ -8,7 +8,7 @@ import type { RequestHandler } from './$types';
 const T2A_V2_URL = "https://api.minimaxi.com/v1/t2a_v2";
 
 // Voice IDs
-const LUO_VOICE_ID = "luo_clone_v1";
+const LUO_VOICE_ID = "luo_yonghao_clone_v1";
 const TIM_VOICE_ID = "tim_clone_v1";
 
 export const POST: RequestHandler = async ({ request }) => {
