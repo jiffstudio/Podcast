@@ -94,14 +94,14 @@
               } else {
                   const el = aiAudioElements[activeBlock.id];
                   if (el && el.paused) el.play();
-                  mainAudio.pause();
+                  if (mainAudio) mainAudio.pause();
                   // Pause other AIs
                   Object.entries(aiAudioElements).forEach(([id, audio]) => {
                       if (id !== activeBlock.id) audio.pause();
                   });
               }
           } else {
-              mainAudio.pause();
+              if (mainAudio) mainAudio.pause();
               pauseAllAi();
           }
 
