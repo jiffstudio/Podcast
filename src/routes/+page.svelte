@@ -297,44 +297,11 @@
 
   // Bind AI audio elements after they're created
   function bindAiAudio(node: HTMLAudioElement, id: string) {
+      console.log(`[bindAiAudio] Binding ${id}`);
       aiAudios[id] = node;
       
       node.onloadedmetadata = () => {
-          const realDuration = node.duration;
-          const seg = $segments.find(s => s.id === id);
-          if (!seg) return;
-          
-          const expectedDuration = seg.virtualEnd - seg.virtualStart;
-          if (isFinite(realDuration) && Math.abs(realDuration - expectedDuration) > 0.1) {
-              console.log(`[AI Audio] Correcting ${id}: ${expectedDuration.toFixed(2)} -> ${realDuration.toFixed(2)}`);
-              
-              const diff = realDuration - expectedDuration;
-              const segStart = seg.virtualStart;
-              const oldSegEnd = seg.virtualEnd;
-              const newSegEnd = segStart + realDuration;
-              
-              segments.update(segs => {
-                  const idx = segs.findIndex(s => s.id === id);
-                  if (idx === -1) return segs;
-                  
-                  segs[idx].virtualEnd = newSegEnd;
-                  segs[idx].sourceEnd = realDuration;
-                  
-                  // Shift subsequent segments
-                  for (let i = idx + 1; i < segs.length; i++) {
-                      segs[i].virtualStart += diff;
-                      segs[i].virtualEnd += diff;
-                  }
-                  
-                  return [...segs];
-              });
-
-              totalDuration.update(d => d + diff);
-              
-              // No need to correct transcript for individual segments
-              // Each segment has its own audio and exact duration
-              // Transcript was already inserted with correct times
-          }
+          console.log(`[bindAiAudio] ${id} metadata loaded, duration: ${node.duration.toFixed(2)}s`);
       };
       
       node.ontimeupdate = () => {
@@ -342,10 +309,14 @@
           updateVirtualTimeFromAudio(id, node.currentTime);
       };
       
-      node.onended = () => transitionToNext();
+      node.onended = () => {
+          console.log(`[bindAiAudio] ${id} ended`);
+          transitionToNext();
+      };
       
       return {
           destroy() {
+              console.log(`[bindAiAudio] Destroying ${id}`);
               delete aiAudios[id];
           }
       };
