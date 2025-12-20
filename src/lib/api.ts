@@ -34,7 +34,7 @@ export async function selectInsertPoint(req: AiInteractionRequest): Promise<Inse
     }
 }
 
-export async function generateAIContent(userQuery: string): Promise<AiInteractionResponse> {
+export async function generateAIContent(userQuery: string, contextBefore?: string, contextAfter?: string): Promise<AiInteractionResponse> {
     console.log("[API] Generating AI content...");
     const startTime = Date.now();
     
@@ -45,7 +45,9 @@ export async function generateAIContent(userQuery: string): Promise<AiInteractio
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                userQuery
+                userQuery,
+                contextBefore,
+                contextAfter
             })
         });
 

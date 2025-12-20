@@ -3,6 +3,8 @@ import { MINIMAX_API_KEY, DOUBAO_API_KEY, DOUBAO_BASE_URL } from '$env/static/pr
 import { Buffer } from 'buffer';
 import mp3Duration from 'mp3-duration';
 import { promisify } from 'util';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 import type { RequestHandler } from './$types';
 
@@ -16,8 +18,12 @@ const T2A_V2_URL = "https://api.minimaxi.com/v1/t2a_v2";
 const LUO_VOICE_ID = "luo_yonghao_clone_v1";
 const TIM_VOICE_ID = "tim_clone_v1";
 
+// Load reference documents
+const PODCAST_OUTLINE = readFileSync(join(process.cwd(), '播客大纲.txt'), 'utf-8');
+const SPEAKER_INFO = readFileSync(join(process.cwd(), '对话人信息.txt'), 'utf-8');
+
 export const POST: RequestHandler = async ({ request }) => {
-    const { userQuery } = await request.json();
+    const { userQuery, contextBefore, contextAfter } = await request.json();
     
     if (!userQuery) {
         return json({ error: "No query provided" }, { status: 400 });
@@ -32,87 +38,159 @@ export const POST: RequestHandler = async ({ request }) => {
     };
 
     try {
-        log(`Generating AI content for: ${userQuery}`);
+        log(`Generating dialogue for: ${userQuery}`);
 
-        // Step 1: Generate Script
-        const hostText = `说到这里，有个听众问了一个很有意思的问题："${userQuery}"。Tim你怎么看？`;
-        let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。";
+        // Build context with INSERT HERE marker
+        const contextText = `${contextBefore || ''}
+
+[INSERT HERE]
+
+${contextAfter || ''}`;
+
+        // Construct the prompt
+        const scriptPrompt = `**角色**
+你是一个播客剧本写作大师，擅长理解前后文的关联，根据人物性格，营造播客氛围，撰写剧本台词。你需要让用户沉浸在播客的氛围里面，用户提出问题的时候，你需要在严格按照事实资料的基础上，根据所提供的多角度输入内容，撰写剧本，从而对用户的问题进行解答，解答问题的核心宗旨是在参考播客上下文和前后关系的同时准确地解答问题，时刻保持这个节目的播客氛围。
+
+**输入**
+A、上下文（包含：一段对话文本，以及在哪里插入这段话，即[INSERT HERE]标记）
+B、用户输入（用户希望嘉宾讨论什么话题）
+C、说话人信息（描述了参与谈话的人的身份，性格，常用语气）
+D、播客大纲（用于查阅客观信息）
+
+**任务**
+现在用户输入了一个希望嘉宾讨论的话题/问题（B用户输入），你需要先了解嘉宾情况（C说话人信息），了解上下文的情况（A上下文），确认插入位置（[INSERT HERE]标记)，接下来开始创作一段对话剧本，对话开始的位置就是插入的位置，如果这个问题和事实确认有关，可以参考播客大纲中的事实（D播客大纲）作为佐证。
+
+**输出**
+一份包含说话人和说话内容的Json格式文档。
+
+**输出格式规范** 
+{
+  "dialogue": [
+    {
+      "speaker": "罗永浩",
+      "content": "content1"
+    }, 
+    {
+      "speaker": "Tim",
+      "content": "content2"
+    }
+  ]
+}
+
+**要求**
+1、符合人物个性：你写的台词需要符合人设
+2、上文关联：需要在语意上连贯，且绝对不许和上文重复。
+3、下文关联：下文连贯性，需要考虑和后文的衔接，且绝对不许和后文重复。
+4、说话人判断：你需要根据用户输入和上下文来判断这个问题应该由谁回答，也就是由另一个人替观众提问。
+5、长度限制：不要让一个人讲述超过4句话。
+6、整体长度限制：你创作的总对话长度不应该超过10句话。
+7、提问包装：用户的提问往往不适合说话人直接说出，需要你做一些更适合播客场景的润色和处理，以更符合说话人身份的口吻说出。
+
+**注意**
+请始终把上下文的语意连贯当作第一优先级！
+
+**引导语使用** 
+当你判断上下文无法非常连贯承接时的时候，你可以尝试在第一句使用引导语，常见的引导语举例："诶，刚刚有一个观众提问""我想起来一个问题......""换个话题，我其实一直有一个疑问，我相信很多听众也有这个困惑......"
+
+---
+
+**A、上下文**
+${contextText}
+
+**B、用户输入**
+${userQuery}
+
+**C、说话人信息**
+${SPEAKER_INFO}
+
+**D、播客大纲**
+${PODCAST_OUTLINE}
+
+---
+
+请严格按照JSON格式输出对话内容，不要添加任何其他文字说明。`;
+
+        log("Calling Doubao API for dialogue generation...");
+        const chatResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${DOUBAO_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "doubao-seed-1-6-251015", 
+                messages: [
+                    {
+                        role: "user",
+                        content: scriptPrompt
+                    }
+                ],
+                thinking: { type: "disabled" },
+                stream: false
+            })
+        });
         
+        const chatData = await chatResp.json();
+        if (!chatResp.ok || !chatData.choices?.[0]) {
+            log(`Doubao Error: ${JSON.stringify(chatData)}`);
+            throw new Error("Failed to generate dialogue script");
+        }
+
+        const rawResponse = chatData.choices[0].message.content;
+        log(`Raw Doubao response: ${rawResponse.substring(0, 200)}...`);
+
+        // Parse JSON response
+        let dialogue: Array<{ speaker: string; content: string }> = [];
         try {
-            log("Calling Doubao API for Tim's response...");
-            const chatResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${DOUBAO_API_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    model: "doubao-seed-1-6-251015", 
-                    messages: [
-                        {
-                            role: "system",
-                            content: "你现在扮演影视飓风的Tim，回答要口语化，像在播客聊天。50字以内。"
-                        },
-                        {
-                            role: "user",
-                            content: userQuery
-                        }
-                    ],
-                    thinking: { type: "disabled" },
-                    stream: false
-                })
-            });
-            const chatData = await chatResp.json();
-            if (chatResp.ok && chatData.choices?.[0]) {
-                timText = chatData.choices[0].message.content;
-                log("Doubao Success");
-            }
+            // Try to extract JSON from markdown code blocks if present
+            const jsonMatch = rawResponse.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || rawResponse.match(/(\{[\s\S]*\})/);
+            const jsonStr = jsonMatch ? jsonMatch[1] : rawResponse;
+            const parsed = JSON.parse(jsonStr);
+            dialogue = parsed.dialogue || [];
+            log(`Parsed ${dialogue.length} dialogue lines`);
         } catch (e: any) {
-            log(`Doubao Error: ${e.message}`);
+            log(`JSON parse error: ${e.message}`);
+            throw new Error("Failed to parse dialogue JSON");
         }
 
-        // Step 2: Generate Audio
-        log("Generating audio for both speakers...");
-        const [hostAudio, timAudio] = await Promise.all([
-            generateT2A(LUO_VOICE_ID, hostText, log),
-            generateT2A(TIM_VOICE_ID, timText, log)
-        ]);
-
-        if (!hostAudio || !timAudio) {
-            throw new Error(`Audio generation failed. Host: ${!!hostAudio}, Guest: ${!!timAudio}`);
+        if (dialogue.length === 0) {
+            throw new Error("No dialogue generated");
         }
 
-        // Step 3: Calculate durations
-        log("Calculating accurate duration...");
-        const hostSeconds = await getDuration(hostAudio);
-        const timSeconds = await getDuration(timAudio);
+        // Generate audio for each speaker
+        log("Generating audio for dialogue...");
+        const segments = [];
         
-        log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s`);
-
-        // Return array of segments, each with its own audio and transcript
-        return json({
-            segments: [
-                {
-                    audioUrl: `data:audio/mp3;base64,${hostAudio.toString('base64')}`,
-                    duration: hostSeconds,
-                    transcript: {
-                        speaker: "罗永浩 (AI)",
-                        content: hostText,
-                        timestamp: "AI-Gen",
-                        type: 'generated'
-                    }
-                },
-                {
-                    audioUrl: `data:audio/mp3;base64,${timAudio.toString('base64')}`,
-                    duration: timSeconds,
-                    transcript: {
-                        speaker: "Tim (AI)",
-                        content: timText,
-                        timestamp: "AI-Gen",
-                        type: 'generated'
-                    }
+        for (const line of dialogue) {
+            const voiceId = line.speaker.includes('罗永浩') ? LUO_VOICE_ID : TIM_VOICE_ID;
+            const audio = await generateT2A(voiceId, line.content, log);
+            
+            if (!audio) {
+                log(`Warning: Failed to generate audio for ${line.speaker}`);
+                continue;
+            }
+            
+            const duration = await getDuration(audio);
+            log(`Generated audio for ${line.speaker}: ${duration.toFixed(2)}s`);
+            
+            segments.push({
+                audioUrl: `data:audio/mp3;base64,${audio.toString('base64')}`,
+                duration,
+                transcript: {
+                    speaker: line.speaker.includes('罗永浩') ? "罗永浩 (AI)" : "Tim (AI)",
+                    content: line.content,
+                    timestamp: "AI-Gen",
+                    type: 'generated'
                 }
-            ],
+            });
+        }
+
+        if (segments.length === 0) {
+            throw new Error("No audio segments generated");
+        }
+
+        return json({
+            segments,
             debugLogs 
         });
 

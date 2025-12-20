@@ -252,9 +252,20 @@
           // Show pending animation at insertion point
           pendingInsertIndex = globalInsertIndex;
           
+          // Build context for AI
+          const contextBefore = lines.slice(Math.max(0, globalInsertIndex - 2), globalInsertIndex + 1)
+              .map(l => `${l.speaker}: ${l.content}`)
+              .join('\n');
+          
+          const contextAfter = lines.slice(globalInsertIndex + 1, Math.min(lines.length, globalInsertIndex + 4))
+              .map(l => `${l.speaker}: ${l.content}`)
+              .join('\n');
+          
+          console.log(`[Context] Before:\n${contextBefore}\n\n[Context] After:\n${contextAfter}`);
+          
           // Step 2: Generate AI content (slow, returns when ready)
           const t3 = Date.now();
-          const contentResult = await generateAIContent(q);
+          const contentResult = await generateAIContent(q, contextBefore, contextAfter);
           const t4 = Date.now();
           console.log(`[Timing] AI content generation: ${t4 - t3}ms`);
           console.log(`[AI Response] Generated ${contentResult.segments.length} segments`);
