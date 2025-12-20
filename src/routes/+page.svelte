@@ -243,9 +243,13 @@
           const insertionPointGlobal = response.insertionPoint;
           
           // 1. Find which segment needs to be split
+          // 逻辑修正：为了避免“插在前面”，我们需要确保插入点是在当前播放时间之后
+          // 如果 insertionPointGlobal 比当前 currentTime 小（因为延迟），强制推到 currentTime + 0.1
+          const safeInsertionPoint = Math.max(insertionPointGlobal, currentTime + 0.1);
+          
           const splitIndex = segments.findIndex(s => 
-              insertionPointGlobal >= s.globalStart && 
-              insertionPointGlobal < s.globalStart + s.duration
+              safeInsertionPoint >= s.globalStart && 
+              safeInsertionPoint < s.globalStart + s.duration
           );
           
           if (splitIndex === -1) {
@@ -254,14 +258,14 @@
           }
           
           const segmentToSplit = segments[splitIndex];
-          addLog(`Splitting segment ${splitIndex} (${segmentToSplit.type})`);
+          addLog(`Splitting segment ${splitIndex} (${segmentToSplit.type}) at ${safeInsertionPoint.toFixed(2)}s`);
           
           if (segmentToSplit.type !== 'original') {
               addLog("Warning: Cannot split AI segment. Appending after.");
               return;
           }
           
-          const splitOffset = insertionPointGlobal - segmentToSplit.globalStart;
+          const splitOffset = safeInsertionPoint - segmentToSplit.globalStart;
           const fileSplitPoint = segmentToSplit.start + splitOffset;
           
           const aiDuration = response.generatedDuration || 5; 
@@ -301,22 +305,25 @@
           segments = [...segments];
           
           // 2. Shift existing transcript lines and insert new ones
-          addLog(`Shifting transcript lines after ${insertionPointGlobal.toFixed(2)}s by ${aiDuration.toFixed(2)}s`);
+          addLog(`Shifting transcript lines after ${safeInsertionPoint.toFixed(2)}s by ${aiDuration.toFixed(2)}s`);
           
           transcript = transcript.map(line => {
-              if (line.seconds > insertionPointGlobal) {
+              if (line.seconds > safeInsertionPoint) {
                   return { ...line, seconds: line.seconds + aiDuration };
               }
               return line;
           });
 
-          const newLines = response.transcript.map(l => ({
-              ...l,
-              relativeSeconds: l.relativeSeconds,
-              seconds: insertionPointGlobal + (aiDuration * (l.relativeSeconds || 0))
-          }));
+          const newLines = response.transcript.map(l => {
+              const ratio = (l.relativeStart || 0) / totalServerDuration;
+              return {
+                  ...l,
+                  relativeRatio: ratio,
+                  seconds: safeInsertionPoint + (aiDuration * ratio)
+              };
+          });
           
-          const insertLineIndex = transcript.findIndex(t => t.seconds > insertionPointGlobal);
+          const insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
           
           if (insertLineIndex === -1) {
               transcript = [...transcript, ...newLines];

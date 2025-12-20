@@ -85,8 +85,14 @@ export const POST: RequestHandler = async ({ request }) => {
         const hostSeconds = hostAudio.length / 16000;
         const timSeconds = timAudio.length / 16000;
 
+        // 为了确保不插在“前面”，我们可以在当前时间戳上加一个小缓冲，
+        // 或者更智能一点：让前端去决定到底是插在当前句子结束还是立即打断
+        // 这里我们把 insertionPoint 设为 currentTimestamp 往后一点点，
+        // 前端会负责找到最近的句子边界
+        const safeInsertionPoint = currentTimestamp + 0.5;
+
         return json({
-            insertionPoint: currentTimestamp + 0.1, // 稍微偏后一点
+            insertionPoint: safeInsertionPoint,
             generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
             hostDuration: hostSeconds, // 罗永浩的确切时长
             timDuration: timSeconds,
@@ -124,7 +130,7 @@ async function generateT2A(voiceId: string, text: string, log: Function): Promis
                 model: "speech-2.6-hd",
                 text,
                 stream: false,
-                voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 0 },
+                voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 0, emotion: "happy" },
                 audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 }
             })
         });
