@@ -4,10 +4,10 @@ import { Buffer } from 'buffer';
 
 import type { RequestHandler } from './$types';
 
-// MiniMax T2S (Text-to-Speech) API URL
-const T2S_URL = "https://api.minimaxi.com/v1/t2s/v2";
+// MiniMax T2S (Text-to-Speech) V1 API URL - often more compatible with older cloned voices
+const T2S_V1_URL = "https://api.minimaxi.com/v1/text_to_speech";
 
-// Fixed Voice IDs as requested by user
+// Voice IDs as requested by user in the latest message
 const LUO_VOICE_ID = "luo_clone_v1";
 const TIM_VOICE_ID = "tim_clone_v1";
 
@@ -71,11 +71,12 @@ export const POST: RequestHandler = async ({ request }) => {
             log(`Doubao Network Error: ${e.message}`);
         }
 
-        // 2. Generate Audio using T2S with fixed voice IDs
-        log("Generating host audio (T2S)...");
+        // 2. Generate Audio using T2S V1
+        // We'll try the V1 API which is often more reliable for legacy cloned voices
+        log("Generating host audio (T2S V1)...");
         const hostAudioBuffer = await generateT2S(LUO_VOICE_ID, hostText, log);
         
-        log("Generating guest audio (T2S)...");
+        log("Generating guest audio (T2S V1)...");
         const timAudioBuffer = await generateT2S(TIM_VOICE_ID, timText, log);
 
         if (!hostAudioBuffer || !timAudioBuffer) {
@@ -127,23 +128,18 @@ export const POST: RequestHandler = async ({ request }) => {
 
 async function generateT2S(voiceId: string, text: string, log: Function): Promise<Buffer | null> {
     try {
-        log(`Calling MiniMax T2S for voice ${voiceId}...`);
-        const resp = await fetch(T2S_URL, {
+        log(`Calling MiniMax T2S V1 for voice ${voiceId}...`);
+        const resp = await fetch(T2S_V1_URL, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${MINIMAX_API_KEY}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: "speech-01-hd", // Version 2 standard HD model
+                model: "speech-01", // Standard V1 model
                 text: text,
                 stream: false,
-                voice_setting: {
-                    voice_id: voiceId,
-                    speed: 1.0,
-                    vol: 1.0,
-                    pitch: 0
-                },
+                voice_id: voiceId,
                 audio_setting: {
                     sample_rate: 32000,
                     bitrate: 128000,
@@ -152,9 +148,9 @@ async function generateT2S(voiceId: string, text: string, log: Function): Promis
             })
         });
 
+        // V1 API can return binary audio or a JSON with a URL depending on the specific endpoint configuration
         const contentType = resp.headers.get('content-type') || '';
         
-        // Handle binary audio response (standard for T2S API)
         if (resp.ok && contentType.includes('audio')) {
             log(`Success: Received binary audio for ${voiceId}`);
             const ab = await resp.arrayBuffer();
@@ -164,18 +160,35 @@ async function generateT2S(voiceId: string, text: string, log: Function): Promis
         const data = await resp.json().catch(() => ({}));
         
         if (!resp.ok) {
-            log(`T2S API Error (${resp.status}) for ${voiceId}: ${JSON.stringify(data.base_resp || data)}`);
+            log(`T2S V1 API Error (${resp.status}) for ${voiceId}: ${JSON.stringify(data.base_resp || data)}`);
             return null;
         }
 
-        // T2S V2 sometimes returns a JSON with an audio URL or base64? 
-        // Based on typical T2S V2 implementation, it's a binary stream.
-        // If we got here, it's not binary and might be an error or unexpected JSON.
-        log(`Unexpected T2S response for ${voiceId}: ${JSON.stringify(data)}`);
+        // Some V1 responses return a URL in a nested object
+        const findUrl = (obj: any): string | null => {
+            if (typeof obj === 'string' && obj.startsWith('http')) return obj;
+            if (typeof obj === 'object' && obj !== null) {
+                for (const key in obj) {
+                    const res = findUrl(obj[key]);
+                    if (res) return res;
+                }
+            }
+            return null;
+        };
+
+        const audioUrl = findUrl(data);
+        if (audioUrl) {
+            log(`Found audio URL in JSON response: ${audioUrl}`);
+            const audioResp = await fetch(audioUrl);
+            const ab = await audioResp.arrayBuffer();
+            return Buffer.from(ab);
+        }
+
+        log(`Unexpected T2S V1 response for ${voiceId}: ${JSON.stringify(data)}`);
         return null;
 
     } catch (e: any) {
-        log(`T2S Network Error for ${voiceId}: ${e.message}`);
+        log(`T2S V1 Network Error for ${voiceId}: ${e.message}`);
         return null;
     }
 }
