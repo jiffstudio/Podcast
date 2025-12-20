@@ -207,25 +207,35 @@
           console.log('[Transcript Insert]', newLines.map(l => `${l.speaker} at ${l.seconds.toFixed(2)}s`));
           
           transcript.update(ts => {
-              // Find insertion index BEFORE shifting
+              // 1. Insert new AI lines at the correct position
               const insertIdx = ts.findIndex(t => t.seconds >= insertAt);
-              console.log(`[Transcript] Insert at index ${insertIdx}, original line: ${insertIdx !== -1 ? ts[insertIdx].speaker + ' at ' + ts[insertIdx].seconds.toFixed(2) : 'END'}`);
+              console.log(`[Transcript] Insert ${newLines.length} AI lines at index ${insertIdx}`);
               
-              // Shift lines after insertAt
-              const shifted = ts.map(l => 
-                  l.seconds >= insertAt 
-                      ? { ...l, seconds: l.seconds + aiDuration }
-                      : l
-              );
-              
-              // Insert new lines at the correct position
+              let result: typeof ts;
               if (insertIdx === -1) {
-                  return [...shifted, ...newLines];
+                  // Insert at end
+                  result = [...ts, ...newLines];
+              } else {
+                  // Insert before the line at insertIdx
+                  result = [...ts];
+                  result.splice(insertIdx, 0, ...newLines);
               }
               
-              const result = [...shifted];
-              result.splice(insertIdx, 0, ...newLines);
-              return result;
+              // 2. Shift ORIGINAL lines that are >= insertAt
+              result = result.map(l => {
+                  // Don't shift the lines we just inserted
+                  if (l.type === 'generated' && newLines.some(nl => nl.speaker === l.speaker && Math.abs(nl.seconds - l.seconds) < 0.01)) {
+                      return l;
+                  }
+                  // Shift original lines
+                  if (l.type === 'original' && l.seconds >= insertAt) {
+                      return { ...l, seconds: l.seconds + aiDuration };
+                  }
+                  return l;
+              });
+              
+              // 3. Sort by time to ensure correct order
+              return result.sort((a, b) => a.seconds - b.seconds);
           });
           
           userQuery.set("");
