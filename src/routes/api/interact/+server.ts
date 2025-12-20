@@ -21,6 +21,7 @@ const TIM_VOICE_ID = "tim_clone_v1";
 // Load reference documents
 const PODCAST_OUTLINE = readFileSync(join(process.cwd(), '播客大纲.txt'), 'utf-8');
 const SPEAKER_INFO = readFileSync(join(process.cwd(), '对话人信息.txt'), 'utf-8');
+const DIALOGUE_HABITS = readFileSync(join(process.cwd(), '对话习惯.txt'), 'utf-8');
 
 const LOG_FILE = join(process.cwd(), 'api-debug.log');
 
@@ -156,29 +157,136 @@ ${PODCAST_OUTLINE}
         const rawResponse = chatData.choices[0].message.content;
         log(`Raw Doubao response: ${rawResponse.substring(0, 200)}...`);
 
-        // Parse JSON response
-        let dialogue: Array<{ speaker: string; content: string }> = [];
+        // Parse JSON response (initial script)
+        let initialDialogue: Array<{ speaker: string; content: string }> = [];
         try {
             // Try to extract JSON from markdown code blocks if present
             const jsonMatch = rawResponse.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || rawResponse.match(/(\{[\s\S]*\})/);
             const jsonStr = jsonMatch ? jsonMatch[1] : rawResponse;
             const parsed = JSON.parse(jsonStr);
-            dialogue = parsed.dialogue || [];
-            log(`Parsed ${dialogue.length} dialogue lines`);
+            initialDialogue = parsed.dialogue || [];
+            log(`Parsed ${initialDialogue.length} initial dialogue lines`);
         } catch (e: any) {
             log(`JSON parse error: ${e.message}`);
             throw new Error("Failed to parse dialogue JSON");
         }
 
-        if (dialogue.length === 0) {
+        if (initialDialogue.length === 0) {
             throw new Error("No dialogue generated");
         }
 
+        // Step 2: Polish the dialogue with character habits
+        log("===== STEP 2: POLISHING DIALOGUE =====");
+        const polishPrompt = `**角色** 
+你是一个对话文本生成润色大师，擅长理解前后文的关联，根据人物性格，营造播客氛围，写出最适合且贴切的对话内容。你需要严格根据所提供的多角度输入内容，达成对话文本生成的目标。
+
+**输入**
+A、上下文（包含：一段对话文本，以及在哪里插入这段话）
+E、对话习惯（发起对话和接应对话的角色说话习惯）
+F、剧本（对话双方的剧情走向）
+
+**任务** 
+现在你得到了对话人的对话习惯（E 对话习惯），你需要了解并记住这个对话人的习惯，然后用他们的对话习惯，在所提供的位置（A 上下文）处，参考所提供的对话剧本（F 剧本），生成对话文本，可以有自己的创作。生成后的文本带回原文，通读全文至通顺，如果不通顺的话带回去重新生成，直至通顺。
+
+**输出** 
+一份包含说话人和说话内容的Json格式文档。
+
+**输出格式规范** 
+{
+  "dialogue": [
+    {
+      "speaker": "罗永浩",
+      "content": "content1"
+    }, 
+    {
+      "speaker": "Tim",
+      "content": "content2"
+    }
+  ]
+}
+
+**要求** 
+1、符合人物个性：你写的台词需要严格符合所提供的人物个性
+2、上文关联：需要在语意上连贯，且绝对不许和上文重复。
+3、下文关联：下文连贯性，需要考虑和后文的衔接，且绝对不许和后文重复。
+4、说话人判断：你需要根据用户输入和上下文来判断这个问题应该由谁回答，也就是由另一个人替观众提问。
+5、长度限制：不要让一个人讲述超过4句话。
+6、整体长度限制：你创作的总对话长度不应该超过10句话。
+7、问答包装：用户的提问往往不适合说话人直接说出，需要你做一些更贴合说话人说话习惯的润色和处理，以更符合说话人身份的口吻说出。
+
+**注意** 
+请始终把上下文的语意连贯当作第一优先级！
+
+---
+
+**A、上下文**
+${contextText}
+
+**E、对话习惯**
+${DIALOGUE_HABITS}
+
+**F、剧本**
+${JSON.stringify(initialDialogue, null, 2)}
+
+---
+
+请严格按照JSON格式输出润色后的对话内容，不要添加任何其他文字说明。`;
+
+        log("===== POLISH PROMPT TO DOUBAO =====");
+        log(polishPrompt);
+        log("===== END OF POLISH PROMPT =====");
+
+        log("Calling Doubao API for dialogue polishing...");
+        const polishResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${DOUBAO_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: "doubao-seed-1-6-251015", 
+                messages: [
+                    {
+                        role: "user",
+                        content: polishPrompt
+                    }
+                ],
+                thinking: { type: "disabled" },
+                stream: false
+            })
+        });
+        
+        const polishData = await polishResp.json();
+        if (!polishResp.ok || !polishData.choices?.[0]) {
+            log(`Doubao Polish Error: ${JSON.stringify(polishData)}`);
+            log("Falling back to initial dialogue");
+            // Fallback to initial dialogue if polish fails
+        } else {
+            const polishRawResponse = polishData.choices[0].message.content;
+            log(`Polish response: ${polishRawResponse.substring(0, 200)}...`);
+
+            try {
+                const jsonMatch = polishRawResponse.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/) || polishRawResponse.match(/(\{[\s\S]*\})/);
+                const jsonStr = jsonMatch ? jsonMatch[1] : polishRawResponse;
+                const parsed = JSON.parse(jsonStr);
+                const polishedDialogue = parsed.dialogue || [];
+                
+                if (polishedDialogue.length > 0) {
+                    initialDialogue = polishedDialogue;
+                    log(`Successfully polished dialogue with ${polishedDialogue.length} lines`);
+                } else {
+                    log("Polish returned empty dialogue, using initial");
+                }
+            } catch (e: any) {
+                log(`Polish parse error: ${e.message}, using initial dialogue`);
+            }
+        }
+
         // Generate audio for each speaker
-        log("Generating audio for dialogue...");
+        log("Generating audio for polished dialogue...");
         const segments = [];
         
-        for (const line of dialogue) {
+        for (const line of initialDialogue) {
             const voiceId = line.speaker.includes('罗永浩') ? LUO_VOICE_ID : TIM_VOICE_ID;
             const audio = await generateT2A(voiceId, line.content, log);
             
