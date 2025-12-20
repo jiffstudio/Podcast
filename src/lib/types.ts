@@ -29,8 +29,12 @@ export interface AiInteractionRequest {
     }[];
 }
 
+export interface InsertPointResponse {
+    insertAtIndex: number;
+    debugLogs: string[];
+}
+
 export interface AiInteractionResponse {
-    insertAtIndex: number; // The line index after which to insert AI content
     segments: {
         audioUrl: string;
         duration: number;

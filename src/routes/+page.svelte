@@ -4,7 +4,7 @@
   import TranscriptView from '$lib/components/TranscriptView.svelte';
   import PlayerBar from '$lib/components/PlayerBar.svelte';
   import transcriptData from '$lib/transcript.json';
-  import { handleUserQuery } from '$lib/api';
+  import { selectInsertPoint, generateAIContent } from '$lib/api';
   import { 
     segments, transcript, virtualTime, totalDuration, isPlaying, 
     playbackSpeed, userQuery, isThinking, showInput,
@@ -222,17 +222,19 @@
           
           console.log(`[AI Insert] Current line index: ${currentLineIndex}, context: ${startIdx}-${endIdx}`);
           
-          const response = await handleUserQuery({
+          // Step 1: Select insertion point (fast, returns immediately)
+          const t1 = Date.now();
+          const insertPointResult = await selectInsertPoint({
               currentTimestamp: vTime,
               userQuery: q,
               contextLines
           });
-          
-          console.log('[AI Response]', response);
-          console.log(`[AI Response] Insert at index: ${response.insertAtIndex}, ${response.segments.length} segments`);
+          const t2 = Date.now();
+          console.log(`[Timing] Insert point selection: ${t2 - t1}ms`);
+          console.log(`[AI Response] Insert at context index: ${insertPointResult.insertAtIndex}`);
           
           // Map context index back to global transcript index
-          const globalInsertIndex = startIdx + response.insertAtIndex;
+          const globalInsertIndex = startIdx + insertPointResult.insertAtIndex;
           
           if (globalInsertIndex < 0 || globalInsertIndex >= lines.length) {
               console.error(`[AI Insert] Invalid insert index: ${globalInsertIndex}`);
@@ -244,13 +246,20 @@
           const nextLine = lines[globalInsertIndex + 1];
           const insertAt = nextLine ? nextLine.seconds : $totalDuration;
           
-          console.log(`[AI Insert] Inserting at ${insertAt.toFixed(2)}s (after line ${globalInsertIndex}: "${insertLine.content.substring(0, 30)}...")`);
+          console.log(`[AI Insert] Will insert at ${insertAt.toFixed(2)}s (after line ${globalInsertIndex}: "${insertLine.content.substring(0, 30)}...")`);
+          
+          // Step 2: Generate AI content (slow, returns when ready)
+          const t3 = Date.now();
+          const contentResult = await generateAIContent(q);
+          const t4 = Date.now();
+          console.log(`[Timing] AI content generation: ${t4 - t3}ms`);
+          console.log(`[AI Response] Generated ${contentResult.segments.length} segments`);
           
           // Insert each segment sequentially
           let currentInsertTime = insertAt;
           const allTranscriptLines: any[] = [];
           
-          for (const segment of response.segments) {
+          for (const segment of contentResult.segments) {
               const aiId = `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
               const aiDuration = segment.duration;
               
