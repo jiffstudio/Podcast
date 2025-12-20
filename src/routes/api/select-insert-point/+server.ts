@@ -1,6 +1,20 @@
 import { json } from '@sveltejs/kit';
 import { DOUBAO_API_KEY, DOUBAO_BASE_URL } from '$env/static/private';
+import { writeFileSync, appendFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import type { RequestHandler } from './$types';
+
+const LOG_FILE = join(process.cwd(), 'api-debug.log');
+
+function writeLog(content: string) {
+    const timestamp = new Date().toISOString();
+    const logEntry = `\n${'='.repeat(80)}\n[${timestamp}]\n${content}\n`;
+    try {
+        appendFileSync(LOG_FILE, logEntry, 'utf-8');
+    } catch (e) {
+        console.error('Failed to write log file:', e);
+    }
+}
 
 export const POST: RequestHandler = async ({ request }) => {
     const { userQuery, currentTimestamp, contextLines } = await request.json();
@@ -106,6 +120,9 @@ B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1
     } catch (e: any) {
         log(`ERROR: ${e.message}`);
         return json({ error: e.message, debugLogs }, { status: 500 });
+    } finally {
+        // Write all logs to file
+        writeLog(`[SELECT INSERT POINT]\n${debugLogs.join('\n')}`);
     }
 };
 

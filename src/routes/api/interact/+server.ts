@@ -3,7 +3,7 @@ import { MINIMAX_API_KEY, DOUBAO_API_KEY, DOUBAO_BASE_URL } from '$env/static/pr
 import { Buffer } from 'buffer';
 import mp3Duration from 'mp3-duration';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { readFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 
 import type { RequestHandler } from './$types';
@@ -21,6 +21,18 @@ const TIM_VOICE_ID = "tim_clone_v1";
 // Load reference documents
 const PODCAST_OUTLINE = readFileSync(join(process.cwd(), '播客大纲.txt'), 'utf-8');
 const SPEAKER_INFO = readFileSync(join(process.cwd(), '对话人信息.txt'), 'utf-8');
+
+const LOG_FILE = join(process.cwd(), 'api-debug.log');
+
+function writeLog(content: string) {
+    const timestamp = new Date().toISOString();
+    const logEntry = `\n${'='.repeat(80)}\n[${timestamp}]\n${content}\n`;
+    try {
+        appendFileSync(LOG_FILE, logEntry, 'utf-8');
+    } catch (e) {
+        console.error('Failed to write log file:', e);
+    }
+}
 
 export const POST: RequestHandler = async ({ request }) => {
     const { userQuery, contextBefore, contextAfter } = await request.json();
@@ -202,6 +214,9 @@ ${PODCAST_OUTLINE}
     } catch (e: any) {
         log(`CRITICAL ERROR: ${e.message}`);
         return json({ error: e.message, debugLogs }, { status: 500 });
+    } finally {
+        // Write all logs to file
+        writeLog(`[GENERATE DIALOGUE]\n${debugLogs.join('\n')}`);
     }
 };
 
