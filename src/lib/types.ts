@@ -7,6 +7,7 @@ export interface PodcastSegment {
     duration: number;
     globalStart: number; // Start time in the global timeline
     color: string; // visualization color
+    audioUrl?: string; // For generated segments
 }
 
 export interface TranscriptLine {

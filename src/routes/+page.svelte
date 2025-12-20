@@ -124,20 +124,16 @@
       // Find which segment corresponds to mainAudio.currentTime
       // Since 'main' segments are parts of the same file, we need to map file time to segment
       
-      // Filter original segments
-      const originalSegments = segments.filter(s => s.type === 'original');
-      
-      // Find which original segment contains the current file time
-      // Assumption: original segments are ordered by their file start time
       const currentFileTime = mainAudio.currentTime;
+      // Find the first original segment where the file time falls within its range
       const activeSegment = segments.find(s => 
           s.type === 'original' && 
           currentFileTime >= s.start && 
-          currentFileTime < s.start + s.duration
+          currentFileTime <= s.start + s.duration + 0.5 // Add some buffer for overshooting
       );
 
       if (activeSegment) {
-          const offsetInSegment = currentFileTime - activeSegment.start;
+          const offsetInSegment = Math.min(currentFileTime - activeSegment.start, activeSegment.duration);
           currentTime = activeSegment.globalStart + offsetInSegment;
       }
   }
@@ -146,52 +142,61 @@
        const activeSegment = segments.find(s => 
           s.type === 'generated' && 
           currentTime >= s.globalStart && 
-          currentTime < s.globalStart + s.duration
+          currentTime <= s.globalStart + s.duration + 0.5
       );
       
       if (activeSegment) {
-          // AI audio always starts at 0 for each segment (assuming separate files or re-seek to 0)
-          // Actually, if we reuse the same file, we might need 'start' offset for AI too if it was one big sprite.
-          // For now, AI audio is 0-based for each segment.
-          currentTime = activeSegment.globalStart + aiAudio.currentTime;
+          currentTime = activeSegment.globalStart + Math.min(aiAudio.currentTime, activeSegment.duration);
       }
   }
 
   function checkSegmentTransition() {
       // Check if we reached the end of the current segment based on global time
-      // Find current segment
       const currentSegIndex = segments.findIndex(s => currentTime >= s.globalStart && currentTime < s.globalStart + s.duration);
       
       if (currentSegIndex !== -1) {
           const currentSeg = segments[currentSegIndex];
           const timeInSegment = currentTime - currentSeg.globalStart;
           
-          // If we are very close to end
-          if (timeInSegment >= currentSeg.duration - 0.2) { // 200ms threshold
+          // If we are very close to end (150ms)
+          if (timeInSegment >= currentSeg.duration - 0.15) { 
                if (currentSegIndex < segments.length - 1) {
+                   console.log(`Transitioning from segment ${currentSegIndex} to ${currentSegIndex + 1}`);
                    playSegment(currentSegIndex + 1);
-               } else {
+               } else if (timeInSegment >= currentSeg.duration - 0.05) {
                    // End of everything
                    isPlaying = false;
+                   mainAudio.pause();
+                   aiAudio.pause();
                }
           }
       }
   }
 
-  function playSegment(index: number) {
+  function playSegment(index: number, offset: number = 0) {
       const segment = segments[index];
-      console.log("Playing segment", index, segment);
+      console.log("Playing segment", index, segment, "at offset", offset);
       
       if (segment.type === 'original') {
           currentAudioSource = 'main';
           aiAudio.pause();
-          mainAudio.currentTime = segment.start; // Seek file to segment start
-          if (isPlaying) mainAudio.play();
+          mainAudio.currentTime = segment.start + offset;
+          if (isPlaying) {
+              mainAudio.play().catch(e => console.error("Error playing mainAudio:", e));
+          }
       } else {
           currentAudioSource = 'ai';
           mainAudio.pause();
-          aiAudio.currentTime = 0; // AI starts from 0
-          if (isPlaying) aiAudio.play();
+          
+          // Only update src if it changed to avoid unnecessary reloads
+          if (segment.audioUrl && aiAudio.src !== segment.audioUrl) {
+              aiAudio.src = segment.audioUrl;
+          }
+          
+          aiAudio.currentTime = offset; 
+          if (isPlaying) {
+              aiAudio.play().catch(e => console.error("Error playing aiAudio:", e));
+          }
       }
   }
 
@@ -245,7 +250,8 @@
               start: 0, 
               duration: response.generatedDuration,
               globalStart: 0, // Will recalc
-              color: 'bg-indigo-500'
+              color: 'bg-indigo-500',
+              audioUrl: response.generatedAudioUrl
           };
           
           const partB: PodcastSegment = {
@@ -347,19 +353,7 @@
       if (segmentIndex !== -1) {
           const segment = segments[segmentIndex];
           const offset = targetTime - segment.globalStart;
-          
-          // If we are seeking to a different source type or jumping far
-          if (segment.type === 'original') {
-              currentAudioSource = 'main';
-              aiAudio.pause();
-              mainAudio.currentTime = segment.start + offset;
-              if (isPlaying) mainAudio.play();
-          } else {
-              currentAudioSource = 'ai';
-              mainAudio.pause();
-              aiAudio.currentTime = offset;
-              if (isPlaying) aiAudio.play();
-          }
+          playSegment(segmentIndex, offset);
           currentTime = targetTime;
       }
   };
