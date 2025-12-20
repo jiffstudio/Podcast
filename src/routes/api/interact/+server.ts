@@ -17,10 +17,14 @@ const LUO_VOICE_ID = "luo_yonghao_clone_v1";
 const TIM_VOICE_ID = "tim_clone_v1";
 
 export const POST: RequestHandler = async ({ request }) => {
-    const { userQuery, currentTimestamp } = await request.json();
+    const { userQuery, currentTimestamp, contextLines } = await request.json();
     
     if (!userQuery) {
         return json({ error: "No query provided" }, { status: 400 });
+    }
+    
+    if (!contextLines || contextLines.length === 0) {
+        return json({ error: "No context provided" }, { status: 400 });
     }
 
     let debugLogs: string[] = [];
@@ -33,13 +37,88 @@ export const POST: RequestHandler = async ({ request }) => {
 
     try {
         log(`Processing query: ${userQuery}`);
+        log(`Current timestamp: ${currentTimestamp}s`);
+        log(`Context lines: ${contextLines.length}`);
 
-        // 1. Generate Script
-        const hostText = `说到这里，有个听众问了一个很有意思的问题：“${userQuery}”。Tim你怎么看？`;
+        // Step 1: Call LLM to determine insertion point
+        log("Calling Doubao to determine insertion point...");
+        
+        const contextText = contextLines.map((line: any) => 
+            `${line.index}、【${line.seconds.toFixed(1)}秒】${line.speaker}: ${line.content}`
+        ).join('\n');
+        
+        const insertPrompt = `**角色** 
+你是一个播客理解大师，擅长理解对话人的语气，非常熟悉对话之间的逻辑。
+
+**任务**
+你现在收到了一条用户的输入，和用户输入前后10句上下文。为了给系统加载留出时间，你需要在用户输入的时刻后，至少20秒以后的位置，找到一个适合开启这个话题的地方。
+
+**要求**
+1、你不需要告诉我该说什么，我只需要返回一个编号，告诉嘉宾在何处开始这个新话题最合适。
+2、输出的编号表示插入的位置在某个句子之后。
+3、一般情况下，你的插入不能在一个提问之后。
+4、你需要理解这个话题是否和上下文有关，如果上下文有相关，最好不要出现太明显的话题跳跃，由于加载所需的延迟，容忍小范围的跳跃。
+5、【第一优先级】请务必找到用户输入时刻至少20秒以后的位置，保证系统有足够的时间准备
+
+**输出**
+【编号】
+
+**输入**
+A、上下文（按照时间编号，第10条为用户输入时嘉宾正在说的内容，0-9为上文，11-20为下文）：
+${contextText}
+
+B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1)}秒）
+
+**输出示例** 
+【17】`;
+
+        let insertAtIndex = 10; // Default to line 10 (current line)
+        
+        try {
+            const insertResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${DOUBAO_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: "doubao-seed-1-6-251015",
+                    messages: [
+                        {
+                            role: "user",
+                            content: insertPrompt
+                        }
+                    ],
+                    stream: false
+                })
+            });
+            
+            const insertData = await insertResp.json();
+            if (insertResp.ok && insertData.choices?.[0]) {
+                const responseText = insertData.choices[0].message.content;
+                log(`Insert position response: ${responseText}`);
+                
+                // Extract number from 【编号】 format
+                const match = responseText.match(/【(\d+)】/);
+                if (match) {
+                    insertAtIndex = parseInt(match[1]);
+                    log(`Parsed insert index: ${insertAtIndex}`);
+                } else {
+                    log(`Failed to parse insert index, using default ${insertAtIndex}`);
+                }
+            } else {
+                log(`Insert position API error: ${JSON.stringify(insertData)}`);
+            }
+        } catch (e: any) {
+            log(`Insert position error: ${e.message}, using default ${insertAtIndex}`);
+        }
+
+        // Step 2: Generate Script
+        const hostText = `说到这里，有个听众问了一个很有意思的问题："${userQuery}"。Tim你怎么看？`;
         let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。";
         
         try {
-            log("Calling Doubao API...");
+            log("Calling Doubao API for Tim's response...");
             const chatResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
                 method: 'POST',
                 headers: {
@@ -70,7 +149,7 @@ export const POST: RequestHandler = async ({ request }) => {
             log(`Doubao Error: ${e.message}`);
         }
 
-        // 2. Generate Audio
+        // Step 3: Generate Audio
         log("Generating audio for both speakers...");
         const [hostAudio, timAudio] = await Promise.all([
             generateT2A(LUO_VOICE_ID, hostText, log),
@@ -81,19 +160,16 @@ export const POST: RequestHandler = async ({ request }) => {
             throw new Error(`Audio generation failed. Host: ${!!hostAudio}, Guest: ${!!timAudio}`);
         }
 
-        // 3. Combine and return metadata
-        const combinedBuffer = Buffer.concat([hostAudio, timAudio]);
-        
-        // Accurate duration calculation using mp3-duration
+        // Step 4: Calculate durations
         log("Calculating accurate duration...");
         const hostSeconds = await getDuration(hostAudio);
         const timSeconds = await getDuration(timAudio);
-        const totalSeconds = await getDuration(combinedBuffer);
         
-        log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s, Total=${totalSeconds}s`);
+        log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s`);
 
         // Return array of segments, each with its own audio and transcript
         return json({
+            insertAtIndex,
             segments: [
                 {
                     audioUrl: `data:audio/mp3;base64,${hostAudio.toString('base64')}`,
@@ -123,7 +199,7 @@ export const POST: RequestHandler = async ({ request }) => {
         log(`CRITICAL ERROR: ${e.message}`);
         return json({ error: e.message, debugLogs }, { status: 500 });
     }
-}
+};
 
 async function generateT2A(voiceId: string, text: string, log: Function): Promise<Buffer | null> {
     try {

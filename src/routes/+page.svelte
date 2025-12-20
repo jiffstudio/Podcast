@@ -195,27 +195,56 @@
           const vTime = $virtualTime;
           const lines = $transcript;
           
-          // Find insertion point (end of current sentence)
-          const activeLine = lines.find((l, i) => {
+          // Find current line index
+          const currentLineIndex = lines.findIndex((l, i) => {
               const nextLine = lines[i + 1];
               return vTime >= l.seconds && (!nextLine || vTime < nextLine.seconds);
           });
           
-          let insertAt = vTime;
-          if (activeLine) {
-              const activeIndex = lines.indexOf(activeLine);
-              const nextLine = lines[activeIndex + 1];
-              insertAt = nextLine ? nextLine.seconds : $totalDuration;
+          if (currentLineIndex === -1) {
+              console.error('[AI Insert] Could not find current line');
+              return;
           }
           
-          console.log(`[AI Insert] At virtual time ${insertAt.toFixed(2)}s`);
+          // Build context: 10 lines before and 10 lines after current position
+          const startIdx = Math.max(0, currentLineIndex - 9);
+          const endIdx = Math.min(lines.length - 1, currentLineIndex + 10);
+          const contextLines = [];
+          
+          for (let i = startIdx; i <= endIdx; i++) {
+              contextLines.push({
+                  index: i - startIdx, // 0-based index for context
+                  speaker: lines[i].speaker,
+                  content: lines[i].content,
+                  seconds: lines[i].seconds
+              });
+          }
+          
+          console.log(`[AI Insert] Current line index: ${currentLineIndex}, context: ${startIdx}-${endIdx}`);
           
           const response = await handleUserQuery({
-              currentTimestamp: insertAt,
-              userQuery: q
+              currentTimestamp: vTime,
+              userQuery: q,
+              contextLines
           });
           
-          console.log('[AI Response]', response.segments.length, 'segments');
+          console.log('[AI Response]', response);
+          console.log(`[AI Response] Insert at index: ${response.insertAtIndex}, ${response.segments.length} segments`);
+          
+          // Map context index back to global transcript index
+          const globalInsertIndex = startIdx + response.insertAtIndex;
+          
+          if (globalInsertIndex < 0 || globalInsertIndex >= lines.length) {
+              console.error(`[AI Insert] Invalid insert index: ${globalInsertIndex}`);
+              return;
+          }
+          
+          // Insert after the specified line
+          const insertLine = lines[globalInsertIndex];
+          const nextLine = lines[globalInsertIndex + 1];
+          const insertAt = nextLine ? nextLine.seconds : $totalDuration;
+          
+          console.log(`[AI Insert] Inserting at ${insertAt.toFixed(2)}s (after line ${globalInsertIndex}: "${insertLine.content.substring(0, 30)}...")`);
           
           // Insert each segment sequentially
           let currentInsertTime = insertAt;

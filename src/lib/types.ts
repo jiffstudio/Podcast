@@ -21,10 +21,16 @@ export interface TranscriptLine {
 export interface AiInteractionRequest {
     currentTimestamp: number;
     userQuery: string;
-    // ... context, history, etc.
+    contextLines: {
+        index: number;
+        speaker: string;
+        content: string;
+        seconds: number;
+    }[];
 }
 
 export interface AiInteractionResponse {
+    insertAtIndex: number; // The line index after which to insert AI content
     segments: {
         audioUrl: string;
         duration: number;

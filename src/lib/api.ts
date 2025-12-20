@@ -11,7 +11,8 @@ export async function handleUserQuery(req: AiInteractionRequest): Promise<AiInte
             },
             body: JSON.stringify({
                 userQuery: req.userQuery,
-                currentTimestamp: req.currentTimestamp
+                currentTimestamp: req.currentTimestamp,
+                contextLines: req.contextLines
             })
         });
 
