@@ -194,17 +194,27 @@
               type: 'generated' as const
           }));
           
+          console.log('[Transcript Insert]', newLines.map(l => `${l.speaker} at ${l.seconds.toFixed(2)}s`));
+          
           transcript.update(ts => {
+              // Find insertion index BEFORE shifting
+              const insertIdx = ts.findIndex(t => t.seconds >= insertAt);
+              console.log(`[Transcript] Insert at index ${insertIdx}, original line: ${insertIdx !== -1 ? ts[insertIdx].speaker + ' at ' + ts[insertIdx].seconds.toFixed(2) : 'END'}`);
+              
+              // Shift lines after insertAt
               const shifted = ts.map(l => 
                   l.seconds >= insertAt 
                       ? { ...l, seconds: l.seconds + aiDuration }
                       : l
               );
-              const idx = shifted.findIndex(t => t.seconds >= insertAt);
-              if (idx === -1) return [...shifted, ...newLines];
+              
+              // Insert new lines at the correct position
+              if (insertIdx === -1) {
+                  return [...shifted, ...newLines];
+              }
               
               const result = [...shifted];
-              result.splice(idx, 0, ...newLines);
+              result.splice(insertIdx, 0, ...newLines);
               return result;
           });
           
