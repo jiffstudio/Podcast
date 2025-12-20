@@ -69,9 +69,6 @@
       const playing = $isPlaying;
       const speed = $playbackSpeed;
 
-      // Skip during SSR
-      if (typeof window === 'undefined') return;
-
       // Find active block
       const activeBlock = blks.find(b => time >= b.globalStart && time < b.globalStart + b.duration);
       
@@ -89,29 +86,22 @@
               syncRealPlayer(activeBlock, time);
           }
           
-          console.log('[Reactive] Playing:', playing, 'Block:', activeBlock.type, 'MainAudio paused:', mainAudio?.paused);
-          
           // Sync Play/Pause State
           if (playing) {
               if (activeBlock.type === 'original') {
-                  if (mainAudio && mainAudio.paused) {
-                      console.log('[Reactive] Calling mainAudio.play()');
-                      mainAudio.play().catch(e => console.error('[Play Error]', e));
-                  }
+                  if (mainAudio && mainAudio.paused) mainAudio.play();
                   pauseAllAi();
               } else {
                   const el = aiAudioElements[activeBlock.id];
-                  if (el && el.paused) {
-                      el.play().catch(e => console.error('[Play Error]', e));
-                  }
-                  if (mainAudio) mainAudio.pause();
+                  if (el && el.paused) el.play();
+                  mainAudio.pause();
                   // Pause other AIs
                   Object.entries(aiAudioElements).forEach(([id, audio]) => {
                       if (id !== activeBlock.id) audio.pause();
                   });
               }
           } else {
-              if (mainAudio) mainAudio.pause();
+              mainAudio.pause();
               pauseAllAi();
           }
 
