@@ -270,19 +270,28 @@
               // Update transcript:
               // 1. For AI lines within this segment, keep relativeStart proportion
               // 2. Shift lines after the OLD segment end
-              transcript.update(ts => ts.map(l => {
-                  // If this is a generated line with a relativeStart field
-                  if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds < oldSegEnd + 0.1) {
-                      // Recalculate based on relativeStart
-                      return { ...l, seconds: segStart + l.relativeStart };
-                  }
-                  // If this is after the OLD segment end, shift it
-                  if (l.seconds >= oldSegEnd - 0.1) {
-                      return { ...l, seconds: l.seconds + diff };
-                  }
-                  // Otherwise, keep as is
-                  return l;
-              }));
+              transcript.update(ts => {
+                  console.log(`[Transcript Correction] segStart=${segStart.toFixed(2)}, oldSegEnd=${oldSegEnd.toFixed(2)}, newSegEnd=${newSegEnd.toFixed(2)}`);
+                  
+                  return ts.map((l, idx) => {
+                      // If this is a generated line with a relativeStart field
+                      if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds < oldSegEnd + 0.1) {
+                          // Recalculate based on relativeStart
+                          const newSeconds = segStart + l.relativeStart;
+                          console.log(`[Transcript] Line ${idx} (AI internal): ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (relativeStart=${l.relativeStart.toFixed(2)})`);
+                          return { ...l, seconds: newSeconds };
+                      }
+                      // If this is after the OLD segment end, shift it
+                      if (l.seconds >= oldSegEnd - 0.1) {
+                          const newSeconds = l.seconds + diff;
+                          console.log(`[Transcript] Line ${idx} (after segment): ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)}`);
+                          return { ...l, seconds: newSeconds };
+                      }
+                      // Otherwise, keep as is
+                      console.log(`[Transcript] Line ${idx} (unchanged): ${l.speaker} @ ${l.seconds.toFixed(2)}`);
+                      return l;
+                  });
+              });
           }
       };
       
