@@ -29,10 +29,8 @@
   let showInput = false;
   
   // Debug Logs for UI
-  let frontendDebugLogs: string[] = [];
+  // Frontend logs now go to console only as requested
   function addLog(msg: string) {
-      const time = new Date().toLocaleTimeString();
-      frontendDebugLogs = [...frontendDebugLogs.slice(-19), `[${time}] ${msg}`];
       console.log(`[Frontend] ${msg}`);
   }
   
@@ -110,14 +108,14 @@
                 recalculateGlobalTimeline();
                 const globalStart = segments[aiSegIndex].globalStart;
                 
-                // Update lines within and after this segment
                 transcript = transcript.map(line => {
-                    // 1. Lines inside this AI segment: reposition based on new duration and ratio
+                    // 1. Lines inside this AI segment
                     if (line.type === 'generated' && line.seconds >= globalStart - 0.1 && line.seconds <= globalStart + oldDuration + 0.1) {
-                        const newPos = globalStart + (actualDuration * (line.relativeSeconds || 0));
-                        return { ...line, seconds: newPos };
+                         // 使用 relativeRatio (0~1) 如果存在，否则用 relativeSeconds 作为比例
+                         const ratio = line.relativeRatio !== undefined ? line.relativeRatio : (line.relativeSeconds || 0);
+                         return { ...line, seconds: globalStart + (actualDuration * ratio) };
                     }
-                    // 2. Lines after this segment: shift by the difference
+                    // 2. Lines after this segment
                     if (line.seconds > globalStart + oldDuration - 0.1) {
                         return { ...line, seconds: line.seconds + diff };
                     }
@@ -439,19 +437,6 @@
     <div bind:this={transcriptContainer} class="flex-1 overflow-y-auto p-8 md:p-16 scroll-smooth relative">
       <div class="max-w-3xl mx-auto space-y-8 py-10 pb-40">
         
-        <!-- Frontend Debug Panel -->
-        {#if frontendDebugLogs.length > 0}
-            <div class="bg-black/40 rounded-lg p-4 mb-8 font-mono text-xs border border-white/10 max-h-40 overflow-y-auto">
-                <div class="flex justify-between items-center mb-2 text-white/40 border-b border-white/5 pb-1">
-                    <span>DEBUG CONSOLE</span>
-                    <button on:click={() => frontendDebugLogs = []} class="hover:text-white transition">Clear</button>
-                </div>
-                {#each frontendDebugLogs as logLine}
-                    <div class="py-0.5"><span class="text-emerald-500/60 mr-2 opacity-50">›</span>{logLine}</div>
-                {/each}
-            </div>
-        {/if}
-
         {#each transcript as line, i}
           <div id="line-{i}" 
                class="transition-all duration-300 cursor-pointer group"

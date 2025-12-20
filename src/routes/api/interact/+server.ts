@@ -79,26 +79,30 @@ export const POST: RequestHandler = async ({ request }) => {
         // 3. Combine and return metadata
         const combinedBuffer = Buffer.concat([hostAudio, timAudio]);
         
-        // 返回比例，让前端根据真实 duration 拆分
-        const hostRatio = hostAudio.length / combinedBuffer.length;
+        // 重新计算并返回每一句话的精确开始时间（秒）
+        // 假设音频是顺序拼接的，我们需要知道罗永浩音频的确切时长
+        // MP3 128kbps = 16000 bytes/sec
+        const hostSeconds = hostAudio.length / 16000;
+        const timSeconds = timAudio.length / 16000;
 
         return json({
             insertionPoint: currentTimestamp + 0.1, // 稍微偏后一点
             generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
-            hostRatio, // 罗永浩占总时长的比例
+            hostDuration: hostSeconds, // 罗永浩的确切时长
+            timDuration: timSeconds,
             transcript: [
                 {
                     speaker: "罗永浩 (AI)",
                     content: hostText,
                     timestamp: "AI-Gen",
-                    relativeSeconds: 0,
+                    relativeStart: 0, 
                     type: 'generated'
                 },
                 {
                     speaker: "Tim (AI)",
                     content: timText,
                     timestamp: "AI-Gen",
-                    relativeSeconds: hostRatio, // 这是比例占位符
+                    relativeStart: hostSeconds, // Tim 从罗永浩说完开始
                     type: 'generated'
                 }
             ],
