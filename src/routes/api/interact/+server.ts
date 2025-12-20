@@ -110,6 +110,11 @@ ${PODCAST_OUTLINE}
 
 请严格按照JSON格式输出对话内容，不要添加任何其他文字说明。`;
 
+        // Log the full prompt for debugging
+        log("===== FULL PROMPT TO DOUBAO (DIALOGUE) =====");
+        log(scriptPrompt);
+        log("===== END OF PROMPT =====");
+
         log("Calling Doubao API for dialogue generation...");
         const chatResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
             method: 'POST',

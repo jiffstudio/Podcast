@@ -55,6 +55,11 @@ B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1
 **输出示例** 
 【17】`;
 
+        // Log the full prompt for debugging
+        log("===== FULL PROMPT TO DOUBAO =====");
+        log(insertPrompt);
+        log("===== END OF PROMPT =====");
+
         let insertAtIndex = 10; // Default to line 10 (current line)
         
         const insertResp = await fetch(`${DOUBAO_BASE_URL}/chat/completions`, {
