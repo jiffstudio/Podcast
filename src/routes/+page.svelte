@@ -303,7 +303,7 @@
               
               // Update transcript:
               // Track original positions before correction
-              // Lines that were originally >= insertAt need to be shifted by diff
+              // Lines that were originally > insertAt need to be shifted by diff
               // But AI internal lines should be recalculated from relativeStart
               const originalInsertAt = segStart; // This is where AI was inserted
               
@@ -321,13 +321,14 @@
                       }
                       // If this is an ORIGINAL line that was shifted during insertion
                       // It should be shifted again by the duration correction
-                      // Original lines >= originalInsertAt were shifted by expectedDuration
+                      // Original lines > originalInsertAt were shifted by expectedDuration
                       // Now need to shift by diff to correct
                       if (l.type === 'original') {
                           // Calculate what this line's original position was (before AI insertion)
                           const originalPos = l.seconds - expectedDuration;
-                          // If it was originally >= insertAt, it needs correction
-                          if (originalPos >= originalInsertAt - 0.1) {
+                          // If it was originally AFTER insertAt, it needs correction
+                          // Use > not >= to exclude the line exactly at insertAt
+                          if (originalPos > originalInsertAt + 0.1) {
                               const newSeconds = l.seconds + diff;
                               if (idx < 10) console.log(`[Duration Correction] Original ${idx}: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (originalPos=${originalPos.toFixed(2)})`);
                               return { ...l, seconds: newSeconds };
