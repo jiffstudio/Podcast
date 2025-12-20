@@ -14,6 +14,7 @@
   // --- Audio Elements ---
   let mainAudio: HTMLAudioElement;
   let aiAudios: Record<string, HTMLAudioElement> = {};
+  let aiAudioUrls: Record<string, string> = {}; // Store audio URLs
 
   // --- State ---
   let currentSegment: Segment | undefined;
@@ -64,6 +65,7 @@
           transitionToNext();
       } else {
           virtualTime.set(newVirtualTime);
+          console.log(`[VTime] ${newVirtualTime.toFixed(2)}s (from ${audioId})`);
       }
   }
 
@@ -129,19 +131,19 @@
       // Sync play/pause
       if (playing) {
           if (activeAudioId === 'main' && mainAudio?.paused) {
-              mainAudio.play();
+              mainAudio.play().catch(() => {});
           } else if (activeAudioId !== 'main') {
               const aiAudio = aiAudios[activeAudioId];
-              if (aiAudio?.paused) aiAudio.play();
+              if (aiAudio?.paused) aiAudio.play().catch(() => {});
           }
       } else {
           if (mainAudio) mainAudio.pause();
-          Object.values(aiAudios).forEach(a => a.pause());
+          Object.values(aiAudios).forEach(a => { if (a) a.pause(); });
       }
       
       // Sync speed
       if (mainAudio) mainAudio.playbackRate = speed;
-      Object.values(aiAudios).forEach(a => a.playbackRate = speed);
+      Object.values(aiAudios).forEach(a => { if (a) a.playbackRate = speed; });
   }
 
   // --- Handle AI Insertion ---
@@ -179,6 +181,9 @@
           const aiId = `ai-${Date.now()}`;
           const aiDuration = response.generatedDuration;
           
+          // Store audio URL
+          aiAudioUrls[aiId] = response.generatedAudioUrl;
+          
           // Insert AI segment into timeline
           insertAISegment(insertAt, aiId, aiDuration);
           
@@ -203,56 +208,64 @@
               return result;
           });
           
-          // Store audio URL for later binding
-          aiAudios[aiId] = null as any; // Will be bound by Svelte
-          setTimeout(() => {
-              const audio = document.getElementById(`audio-${aiId}`) as HTMLAudioElement;
-              if (audio) {
-                  aiAudios[aiId] = audio;
-                  audio.onloadedmetadata = () => {
-                      // Update duration if needed
-                      const realDuration = audio.duration;
-                      if (isFinite(realDuration) && Math.abs(realDuration - aiDuration) > 0.1) {
-                          console.log(`[AI Audio] Correcting duration: ${aiDuration.toFixed(2)} -> ${realDuration.toFixed(2)}`);
-                          segments.update(segs => {
-                              const seg = segs.find(s => s.id === aiId);
-                              if (seg) {
-                                  const diff = realDuration - aiDuration;
-                                  seg.virtualEnd += diff;
-                                  seg.sourceEnd = realDuration;
-                                  // Shift all subsequent segments
-                                  const idx = segs.indexOf(seg);
-                                  for (let i = idx + 1; i < segs.length; i++) {
-                                      segs[i].virtualStart += diff;
-                                      segs[i].virtualEnd += diff;
-                                  }
-                                  totalDuration.update(d => d + diff);
-                              }
-                              return [...segs];
-                          });
-                          transcript.update(ts => ts.map(l => 
-                              l.seconds > insertAt ? { ...l, seconds: l.seconds + (realDuration - aiDuration) } : l
-                          ));
-                      }
-                  };
-                  audio.ontimeupdate = () => {
-                      if (!$isPlaying || activeAudioId !== aiId) return;
-                      updateVirtualTimeFromAudio(aiId, audio.currentTime);
-                  };
-                  audio.onended = () => transitionToNext();
-              }
-          }, 100);
-          
-          // Preload AI audio
-          const audio = new Audio(response.generatedAudioUrl);
-          audio.preload = 'auto';
-          
           userQuery.set("");
       } catch (e: any) {
           alert(e.message);
       } finally {
           isThinking.set(false);
       }
+  }
+
+  // Bind AI audio elements after they're created
+  function bindAiAudio(node: HTMLAudioElement, id: string) {
+      aiAudios[id] = node;
+      
+      node.onloadedmetadata = () => {
+          const realDuration = node.duration;
+          const seg = $segments.find(s => s.id === id);
+          if (!seg) return;
+          
+          const expectedDuration = seg.virtualEnd - seg.virtualStart;
+          if (isFinite(realDuration) && Math.abs(realDuration - expectedDuration) > 0.1) {
+              console.log(`[AI Audio] Correcting ${id}: ${expectedDuration.toFixed(2)} -> ${realDuration.toFixed(2)}`);
+              
+              const diff = realDuration - expectedDuration;
+              segments.update(segs => {
+                  const idx = segs.findIndex(s => s.id === id);
+                  if (idx === -1) return segs;
+                  
+                  segs[idx].virtualEnd += diff;
+                  segs[idx].sourceEnd = realDuration;
+                  
+                  // Shift subsequent segments
+                  for (let i = idx + 1; i < segs.length; i++) {
+                      segs[i].virtualStart += diff;
+                      segs[i].virtualEnd += diff;
+                  }
+                  
+                  return [...segs];
+              });
+              
+              totalDuration.update(d => d + diff);
+              
+              transcript.update(ts => ts.map(l => 
+                  l.seconds > seg.virtualStart ? { ...l, seconds: l.seconds + diff } : l
+              ));
+          }
+      };
+      
+      node.ontimeupdate = () => {
+          if (!$isPlaying || activeAudioId !== id) return;
+          updateVirtualTimeFromAudio(id, node.currentTime);
+      };
+      
+      node.onended = () => transitionToNext();
+      
+      return {
+          destroy() {
+              delete aiAudios[id];
+          }
+      };
   }
 
   // --- UI Interactions ---
@@ -270,10 +283,10 @@
   <audio bind:this={mainAudio} src="/podcast.mp3" preload="metadata"></audio>
   
   <!-- AI Audio Pool -->
-  {#each $segments.filter(s => s.type === 'ai') as seg (seg.id)}
+  {#each Object.entries(aiAudioUrls) as [id, url] (id)}
       <audio 
-          id="audio-{seg.id}"
-          src={seg.audioId}
+          use:bindAiAudio={id}
+          src={url}
           preload="auto"
       ></audio>
   {/each}
