@@ -302,17 +302,28 @@
               totalDuration.update(d => d + diff);
               
               // Update transcript:
-              // 1. For AI lines within this segment, keep relativeStart proportion
-              // 2. Shift lines after the OLD segment end
+              // Track original positions before correction
+              // Lines that were originally >= insertAt need to be shifted by diff
+              // But AI internal lines should be recalculated from relativeStart
+              const originalInsertAt = segStart; // This is where AI was inserted
+              
               transcript.update(ts => {
                   const updated = ts.map(l => {
-                      // If this is a generated line with a relativeStart field
-                      if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds < oldSegEnd + 0.1) {
+                      // If this is an AI line with relativeStart, recalculate from actual duration
+                      if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds <= oldSegEnd + 0.1) {
                           return { ...l, seconds: segStart + l.relativeStart };
                       }
-                      // If this is after the OLD segment end, shift it
-                      if (l.seconds >= oldSegEnd - 0.1) {
-                          return { ...l, seconds: l.seconds + diff };
+                      // If this is an ORIGINAL line that was shifted during insertion
+                      // It should be shifted again by the duration correction
+                      // Original lines >= originalInsertAt were shifted by expectedDuration
+                      // Now need to shift by diff to correct
+                      if (l.type === 'original') {
+                          // Calculate what this line's original position was (before AI insertion)
+                          const originalPos = l.seconds - expectedDuration;
+                          // If it was originally >= insertAt, it needs correction
+                          if (originalPos >= originalInsertAt - 0.1) {
+                              return { ...l, seconds: l.seconds + diff };
+                          }
                       }
                       return l;
                   });
