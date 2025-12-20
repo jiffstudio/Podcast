@@ -71,14 +71,15 @@
 
       // Find active block
       const activeBlock = blks.find(b => time >= b.globalStart && time < b.globalStart + b.duration);
+      
+      // Check if we need to switch source or seek
+      const needsSeek = Math.abs(time - lastSyncTime) > 0.5; // Threshold for "seek" vs "tick"
 
       if (activeBlock) {
           // Sync Playback Rate
           if (mainAudio) mainAudio.playbackRate = speed;
           Object.values(aiAudioElements).forEach(el => el.playbackRate = speed);
 
-          // Check if we need to switch source or seek
-          const needsSeek = Math.abs(time - lastSyncTime) > 0.5; // Threshold for "seek" vs "tick"
           const blockChanged = activeBlock.id !== lastActiveBlockId;
           
           if (needsSeek || blockChanged) {

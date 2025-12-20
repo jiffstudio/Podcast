@@ -59,15 +59,16 @@
       {/each}
       
       <!-- Playhead -->
-      <div 
-        class="absolute top-0 bottom-0 bg-emerald-500 w-1 transition-all"
-        style="left: {$progress}%"
-      >
-        {@const currentBlock = $blocks.find(b => $currentTime >= b.globalStart && $currentTime < b.globalStart + b.duration)}
-        {#if currentBlock?.type === 'generated'}
-          <div class="absolute -top-1 -bottom-1 -left-1 -right-1 bg-indigo-500 blur-sm"></div>
-        {/if}
-      </div>
+      {#each [$blocks.find(b => $currentTime >= b.globalStart && $currentTime < b.globalStart + b.duration)] as currentBlock}
+        <div 
+          class="absolute top-0 bottom-0 bg-emerald-500 w-1 transition-all"
+          style="left: {$progress}%"
+        >
+          {#if currentBlock?.type === 'generated'}
+            <div class="absolute -top-1 -bottom-1 -left-1 -right-1 bg-indigo-500 blur-sm"></div>
+          {/if}
+        </div>
+      {/each}
     </div>
     
     <span class="text-xs font-mono w-10 opacity-60">
