@@ -314,12 +314,16 @@
               return line;
           });
 
+          // Use relativeStart from response directly
           const newLines = response.transcript.map(l => {
-              const ratio = (l.relativeStart || 0) / totalServerDuration;
+              // l.relativeStart is in seconds from the start of the AI segment
+              // We convert it to a ratio (0-1) relative to the estimated AI duration for now
+              // This ratio will be used later in onloadedmetadata to map to the REAL duration
+              const ratio = (l.relativeStart || 0) / (response.generatedDuration || 5);
               return {
                   ...l,
                   relativeRatio: ratio,
-                  seconds: safeInsertionPoint + (aiDuration * ratio)
+                  seconds: safeInsertionPoint + (l.relativeStart || 0) // Initially use server-provided seconds
               };
           });
           
