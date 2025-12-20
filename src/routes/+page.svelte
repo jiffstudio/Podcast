@@ -209,7 +209,9 @@
           transcript.update(ts => {
               // 1. Insert new AI lines at the correct position
               const insertIdx = ts.findIndex(t => t.seconds >= insertAt);
-              console.log(`[Transcript] Insert ${newLines.length} AI lines at index ${insertIdx}`);
+              console.log(`[Transcript] Before insert:`, ts.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              console.log(`[Transcript] Inserting ${newLines.length} AI lines at index ${insertIdx}`);
+              console.log(`[Transcript] AI lines:`, newLines.map(l => `${l.speaker} @ ${l.seconds.toFixed(2)}s`));
               
               let result: typeof ts;
               if (insertIdx === -1) {
@@ -221,6 +223,8 @@
                   result.splice(insertIdx, 0, ...newLines);
               }
               
+              console.log(`[Transcript] After insert (before shift):`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              
               // 2. Shift ORIGINAL lines that are >= insertAt
               result = result.map(l => {
                   // Don't shift the lines we just inserted
@@ -229,13 +233,21 @@
                   }
                   // Shift original lines
                   if (l.type === 'original' && l.seconds >= insertAt) {
-                      return { ...l, seconds: l.seconds + aiDuration };
+                      const newSeconds = l.seconds + aiDuration;
+                      console.log(`[Transcript] Shifting: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)}`);
+                      return { ...l, seconds: newSeconds };
                   }
                   return l;
               });
               
+              console.log(`[Transcript] After shift (before sort):`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              
               // 3. Sort by time to ensure correct order
-              return result.sort((a, b) => a.seconds - b.seconds);
+              result = result.sort((a, b) => a.seconds - b.seconds);
+              
+              console.log(`[Transcript] Final result:`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              
+              return result;
           });
           
           userQuery.set("");
