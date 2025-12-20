@@ -28,8 +28,10 @@
   let isThinking = false;
   let showInput = false;
   
-  // Debug Logs for UI
-  // Frontend logs now go to console only as requested
+  // Robust state tracking
+  let activeSegmentIndex = 0;
+  
+  // Logging
   function addLog(msg: string) {
       console.log(`[Frontend] ${msg}`);
   }
@@ -67,23 +69,23 @@
 
   onMount(() => {
     if (mainAudio) {
-      if (mainAudio.readyState >= 1) {
-          const d = mainAudio.duration;
-          segments[0].duration = d;
-          recalculateGlobalTimeline();
-          segments = segments;
-      }
-
-      mainAudio.onloadedmetadata = () => {
-        const d = mainAudio.duration;
-        segments[0].duration = d;
-        recalculateGlobalTimeline();
-        segments = segments;
+      const initMain = () => {
+          if (segments.length === 1 && segments[0].type === 'original') {
+              const d = mainAudio.duration;
+              if (isFinite(d)) {
+                  segments[0].duration = d;
+                  recalculateGlobalTimeline();
+                  segments = segments;
+              }
+          }
       };
+
+      if (mainAudio.readyState >= 1) initMain();
+      mainAudio.onloadedmetadata = initMain;
       
       mainAudio.ontimeupdate = () => {
         if (currentAudioSource === 'main') {
-            updateGlobalTimeFromMain();
+            updateTime();
             checkSegmentTransition();
         }
       };
@@ -94,25 +96,30 @@
             const actualDuration = aiAudio.duration;
             addLog(`AI Audio Metadata loaded: ${actualDuration.toFixed(2)}s`);
             
+            // Find which segment corresponds to this audio
+            // We match by checking active segment (usually we just loaded it)
+            // Or better, find segment by audioUrl if possible, or just assume it's the generated one if we are in AI mode
+            // To be safe, we look for the segment that triggered this load
+            
             const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
             if (aiSegIndex !== -1) {
                 const seg = segments[aiSegIndex];
                 const oldDuration = seg.duration;
                 const diff = actualDuration - oldDuration;
                 
-                if (Math.abs(diff) < 0.01) return; // Ignore tiny changes
+                if (Math.abs(diff) < 0.05) return; // Ignore small changes
 
-                addLog(`Adjusting AI segment duration: ${oldDuration.toFixed(2)} -> ${actualDuration.toFixed(2)} (diff: ${diff.toFixed(2)})`);
+                addLog(`Correcting AI duration: ${oldDuration.toFixed(2)} -> ${actualDuration.toFixed(2)}`);
                 
                 segments[aiSegIndex].duration = actualDuration;
                 recalculateGlobalTimeline();
                 const globalStart = segments[aiSegIndex].globalStart;
                 
+                // Recalibrate transcript lines
                 transcript = transcript.map(line => {
                     // 1. Lines inside this AI segment
                     if (line.type === 'generated' && line.seconds >= globalStart - 0.1 && line.seconds <= globalStart + oldDuration + 0.1) {
-                         // 使用 relativeRatio (0~1) 如果存在，否则用 relativeSeconds 作为比例
-                         const ratio = line.relativeRatio !== undefined ? line.relativeRatio : (line.relativeSeconds || 0);
+                         const ratio = line.relativeRatio !== undefined ? line.relativeRatio : 0;
                          return { ...line, seconds: globalStart + (actualDuration * ratio) };
                     }
                     // 2. Lines after this segment
@@ -123,19 +130,14 @@
                 });
                 
                 segments = [...segments];
-                addLog("Timeline recalibration complete.");
             }
         };
 
         aiAudio.ontimeupdate = () => {
             if (currentAudioSource === 'ai') {
-                updateGlobalTimeFromAi();
+                updateTime();
                 checkSegmentTransition();
             }
-        };
-
-        aiAudio.onerror = (e) => {
-            addLog(`AI Audio Error: ${aiAudio.error?.message || 'Unknown error'}`);
         };
     }
   });
@@ -149,79 +151,70 @@
       duration = currentGlobal;
   }
 
-  function updateGlobalTimeFromMain() {
-      const currentFileTime = mainAudio.currentTime;
-      const activeSegment = segments.find(s => 
-          s.type === 'original' && 
-          currentFileTime >= s.start - 0.01 && 
-          currentFileTime <= s.start + s.duration + 0.01
-      );
+  function updateTime() {
+      const activeSeg = segments[activeSegmentIndex];
+      if (!activeSeg) return;
 
-      if (activeSegment) {
-          const offsetInSegment = Math.max(0, Math.min(currentFileTime - activeSegment.start, activeSegment.duration));
-          currentTime = activeSegment.globalStart + offsetInSegment;
-      }
-  }
-
-  function updateGlobalTimeFromAi() {
-       const activeSegment = segments.find(s => 
-          s.type === 'generated' && 
-          currentTime >= s.globalStart - 0.01 && 
-          currentTime <= s.globalStart + s.duration + 0.01
-      );
-      
-      if (activeSegment) {
-          const offsetInSegment = Math.max(0, Math.min(aiAudio.currentTime, activeSegment.duration));
-          currentTime = activeSegment.globalStart + offsetInSegment;
+      if (activeSeg.type === 'original') {
+          // Sync global time from file time
+          // But ensure we don't go out of bounds of the segment
+          const offset = Math.max(0, Math.min(mainAudio.currentTime - activeSeg.start, activeSeg.duration));
+          currentTime = activeSeg.globalStart + offset;
+      } else {
+          // AI segment starts at 0
+          const offset = Math.max(0, Math.min(aiAudio.currentTime, activeSeg.duration));
+          currentTime = activeSeg.globalStart + offset;
       }
   }
 
   function checkSegmentTransition() {
-      // Check if we reached the end of the current segment based on global time
-      const currentSegIndex = segments.findIndex(s => currentTime >= s.globalStart && currentTime < s.globalStart + s.duration);
+      const activeSeg = segments[activeSegmentIndex];
+      if (!activeSeg) return;
       
-      if (currentSegIndex !== -1) {
-          const currentSeg = segments[currentSegIndex];
-          const timeInSegment = currentTime - currentSeg.globalStart;
-          
-          // If we are very close to end (150ms)
-          if (timeInSegment >= currentSeg.duration - 0.15) { 
-               if (currentSegIndex < segments.length - 1) {
-                   console.log(`Transitioning from segment ${currentSegIndex} to ${currentSegIndex + 1}`);
-                   playSegment(currentSegIndex + 1);
-               } else if (timeInSegment >= currentSeg.duration - 0.05) {
-                   // End of everything
-                   isPlaying = false;
-                   mainAudio.pause();
-                   aiAudio.pause();
-               }
+      const timeInSegment = currentTime - activeSeg.globalStart;
+      const timeLeft = activeSeg.duration - timeInSegment;
+      
+      // Transition window
+      if (timeLeft <= 0.15) {
+          if (activeSegmentIndex < segments.length - 1) {
+              addLog(`Transitioning segment ${activeSegmentIndex} -> ${activeSegmentIndex + 1}`);
+              playSegment(activeSegmentIndex + 1);
+          } else if (timeLeft <= 0.05) {
+              isPlaying = false;
+              mainAudio.pause();
+              aiAudio.pause();
           }
       }
   }
 
   function playSegment(index: number, offset: number = 0) {
-      const segment = segments[index];
-      console.log("Playing segment", index, segment, "at offset", offset);
+      if (index < 0 || index >= segments.length) return;
       
+      const prevSource = currentAudioSource;
+      activeSegmentIndex = index;
+      const segment = segments[index];
+      
+      addLog(`Playing segment ${index} (${segment.type}) at offset ${offset.toFixed(2)}`);
+
       if (segment.type === 'original') {
           currentAudioSource = 'main';
-          aiAudio.pause();
+          if (prevSource === 'ai') aiAudio.pause();
+          
           mainAudio.currentTime = segment.start + offset;
           if (isPlaying) {
-              mainAudio.play().catch(e => console.error("Error playing mainAudio:", e));
+              mainAudio.play().catch(e => console.error("Play error:", e));
           }
       } else {
           currentAudioSource = 'ai';
-          mainAudio.pause();
+          if (prevSource === 'main') mainAudio.pause();
           
-          // Only update src if it changed to avoid unnecessary reloads
           if (segment.audioUrl && aiAudio.src !== segment.audioUrl) {
               aiAudio.src = segment.audioUrl;
           }
           
-          aiAudio.currentTime = offset; 
+          aiAudio.currentTime = offset;
           if (isPlaying) {
-              aiAudio.play().catch(e => console.error("Error playing aiAudio:", e));
+              aiAudio.play().catch(e => console.error("Play error:", e));
           }
       }
   }
@@ -231,7 +224,6 @@
       
       isThinking = true;
       showInput = false; 
-      addLog(`Asking AI: "${userQuery}"`);
       
       try {
           const response = await handleUserQuery({
@@ -239,29 +231,27 @@
               userQuery: userQuery
           });
 
-          addLog(`AI Response received. Inserting at ${currentTime.toFixed(2)}s`);
-          const insertionPointGlobal = response.insertionPoint;
+          // Insert AFTER current playback time with a small buffer
+          // This ensures we don't insert "behind" the cursor
+          const safeInsertionPoint = currentTime + 0.1;
           
-          // 1. Find which segment needs to be split
-          // 逻辑修正：为了避免“插在前面”，我们需要确保插入点是在当前播放时间之后
-          // 如果 insertionPointGlobal 比当前 currentTime 小（因为延迟），强制推到 currentTime + 0.1
-          const safeInsertionPoint = Math.max(insertionPointGlobal, currentTime + 0.1);
-          
+          // Find segment to split
+          // Since we use activeSegmentIndex, we basically just split the current one
+          // But strictly speaking we should look up by time
           const splitIndex = segments.findIndex(s => 
               safeInsertionPoint >= s.globalStart && 
               safeInsertionPoint < s.globalStart + s.duration
           );
           
           if (splitIndex === -1) {
-              addLog("Error: Insertion point out of bounds");
-              return;
+              // Should not happen if logic is correct, unless at very end
+              addLog("Insertion point at very end, appending.");
+              return; 
           }
           
           const segmentToSplit = segments[splitIndex];
-          addLog(`Splitting segment ${splitIndex} (${segmentToSplit.type}) at ${safeInsertionPoint.toFixed(2)}s`);
-          
           if (segmentToSplit.type !== 'original') {
-              addLog("Warning: Cannot split AI segment. Appending after.");
+              addLog("Can't split AI segment yet.");
               return;
           }
           
@@ -293,6 +283,7 @@
               duration: segmentToSplit.duration - splitOffset
           };
           
+          // Update segments
           segments = [
               ...segments.slice(0, splitIndex),
               partA,
@@ -301,12 +292,16 @@
               ...segments.slice(splitIndex + 1)
           ];
           
+          // Current active segment (partA) index is splitIndex
+          // We are still playing partA, so activeSegmentIndex remains splitIndex
+          // When partA ends, it will naturally transition to splitIndex + 1 (AI)
+          activeSegmentIndex = splitIndex;
+          
           recalculateGlobalTimeline();
           segments = [...segments];
           
-          // 2. Shift existing transcript lines and insert new ones
-          addLog(`Shifting transcript lines after ${safeInsertionPoint.toFixed(2)}s by ${aiDuration.toFixed(2)}s`);
-          
+          // Update Transcript
+          // Shift lines after insertion
           transcript = transcript.map(line => {
               if (line.seconds > safeInsertionPoint) {
                   return { ...line, seconds: line.seconds + aiDuration };
@@ -314,21 +309,19 @@
               return line;
           });
 
-          // Use relativeStart from response directly
+          // Insert new lines
           const newLines = response.transcript.map(l => {
-              // l.relativeStart is in seconds from the start of the AI segment
-              // We convert it to a ratio (0-1) relative to the estimated AI duration for now
-              // This ratio will be used later in onloadedmetadata to map to the REAL duration
-              const ratio = (l.relativeStart || 0) / (response.generatedDuration || 5);
+              // l.relativeStart is seconds relative to AI start
+              // Calculate ratio for future calibration
+              const ratio = (l.relativeStart || 0) / aiDuration;
               return {
                   ...l,
                   relativeRatio: ratio,
-                  seconds: safeInsertionPoint + (l.relativeStart || 0) // Initially use server-provided seconds
+                  seconds: safeInsertionPoint + (l.relativeStart || 0)
               };
           });
           
           const insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
-          
           if (insertLineIndex === -1) {
               transcript = [...transcript, ...newLines];
           } else {
@@ -339,15 +332,14 @@
               ];
           }
           
-          addLog("Transcript updated. Preloading AI audio...");
+          // Preload
           aiAudio.src = response.generatedAudioUrl;
           aiAudio.load();
 
           userQuery = "";
           
       } catch (e: any) {
-          addLog(`Error in handleAskQuestion: ${e.message}`);
-          alert("Interaction failed: " + e.message); 
+          alert("Error: " + e.message); 
       } finally {
           isThinking = false;
       }
@@ -384,11 +376,8 @@
       if (segmentIndex !== -1) {
           const segment = segments[segmentIndex];
           const offset = targetTime - segment.globalStart;
-          addLog(`Target found in segment ${segmentIndex} (${segment.type}). Local offset: ${offset.toFixed(2)}s`);
           playSegment(segmentIndex, offset);
           currentTime = targetTime;
-      } else {
-          addLog(`Error: Could not find segment for time ${targetTime.toFixed(2)}s`);
       }
   };
 
@@ -500,9 +489,6 @@
          tabindex="0">
       <span class="text-xs font-mono opacity-60 w-12 text-right">{formatTime(currentTime)}</span>
       <div class="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden relative flex">
-        <!-- Original Segment Background -->
-        <div class="absolute inset-0 bg-white/5 rounded-full"></div>
-        
         <!-- Render Segments -->
         {#each segments as seg}
              {#if seg.type === 'generated'}
