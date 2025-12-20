@@ -15,6 +15,7 @@
   let mainAudio: HTMLAudioElement;
   let aiAudios: Record<string, HTMLAudioElement> = {};
   let aiAudioUrls: Record<string, string> = {}; // Store audio URLs
+  let pendingInsertIndex: number | null = null; // Animation index
 
   // --- State ---
   let currentSegment: Segment | undefined;
@@ -248,12 +249,19 @@
           
           console.log(`[AI Insert] Will insert at ${insertAt.toFixed(2)}s (after line ${globalInsertIndex}: "${insertLine.content.substring(0, 30)}...")`);
           
+          // Show pending animation at insertion point
+          pendingInsertIndex = globalInsertIndex;
+          
           // Step 2: Generate AI content (slow, returns when ready)
           const t3 = Date.now();
           const contentResult = await generateAIContent(q);
           const t4 = Date.now();
           console.log(`[Timing] AI content generation: ${t4 - t3}ms`);
           console.log(`[AI Response] Generated ${contentResult.segments.length} segments`);
+          
+          // Clear animation
+          pendingInsertIndex = null;
+          isThinking.set(false); // Stop thinking indicator
           
           // Insert each segment sequentially
           let currentInsertTime = insertAt;
@@ -408,7 +416,7 @@
 
   <div class="flex-1 flex overflow-hidden relative">
      <PodcastInfo />
-     <TranscriptView onSeek={seek} />
+     <TranscriptView onSeek={seek} {pendingInsertIndex} />
   </div>
 
   <PlayerBar 
