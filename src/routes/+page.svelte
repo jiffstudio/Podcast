@@ -120,11 +120,16 @@
       const vTime = $virtualTime;
       const playing = $isPlaying;
       const speed = $playbackSpeed;
+      const segs = $segments; // Depend on segments too
       
       const jumped = Math.abs(vTime - lastVirtualTime) > 0.5;
       lastVirtualTime = vTime;
       
-      if (jumped || !currentSegment) {
+      // Check if we need to switch segment
+      const shouldBe = findSegmentAt(vTime);
+      const segmentChanged = !currentSegment || (shouldBe && shouldBe.id !== currentSegment.id);
+      
+      if (jumped || !currentSegment || segmentChanged) {
           syncAudioToVirtualTime(vTime, true);
       }
       
