@@ -19,7 +19,8 @@
   // --- Initialization ---
   onMount(() => {
     // Initialize Stores
-    transcript.set(transcriptData.map(t => ({ ...t, type: 'original' })));
+    const lines = transcriptData.map(t => ({ ...t, type: 'original' as const }));
+    transcript.set(lines);
     
     // Main Audio Setup
     if (mainAudio) {
@@ -27,20 +28,26 @@
             if ($blocks.length === 0) {
                 const d = mainAudio.duration;
                 if (isFinite(d)) {
-                    blocks.set([{
-                        id: 'main-start',
-                        type: 'original',
-                        globalStart: 0,
-                        duration: d,
-                        sourceStart: 0,
-                        audioUrl: 'main',
-                        color: 'bg-emerald-500'
-                    }]);
+                    // Create blocks based on transcript lines
+                    const initialBlocks: TimelineBlock[] = lines.map((line, i) => {
+                        const nextLine = lines[i + 1];
+                        const blockDuration = nextLine ? nextLine.seconds - line.seconds : d - line.seconds;
+                        return {
+                            id: `line-${i}`,
+                            type: 'original' as const,
+                            globalStart: line.seconds,
+                            duration: blockDuration,
+                            sourceStart: line.seconds,
+                            audioUrl: 'main',
+                            color: 'bg-emerald-500'
+                        };
+                    });
+                    blocks.set(initialBlocks);
                     recalcGlobals();
                 }
             }
         };
-        mainAudio.ontimeupdate = () => syncVirtualTime(mainAudio, 'original', 'main-start'); // ID check imprecise here but ok for main
+        mainAudio.ontimeupdate = () => syncVirtualTime(mainAudio, 'original');
         mainAudio.onended = checkTransition;
     }
     
@@ -209,16 +216,24 @@
       try {
            const time = $currentTime;
            const lines = $transcript;
-           const dur = $duration;
+           const blks = $blocks;
            
-           // Logic: Find insert point
+           // Find the current line
+           const activeLine = lines.find((l, i) => {
+               const nextLine = lines[i + 1];
+               return time >= l.seconds && (!nextLine || time < nextLine.seconds);
+           });
+           
+           // Insert after current line finishes
            let insertAt = time;
-           const activeLine = lines.find(l => time >= l.seconds && (!lines[lines.indexOf(l)+1] || time < lines[lines.indexOf(l)+1].seconds));
-           
            if (activeLine) {
-               const nextLine = lines[lines.indexOf(activeLine) + 1];
-               if (nextLine) insertAt = nextLine.seconds;
-               else insertAt = dur;
+               const activeIndex = lines.indexOf(activeLine);
+               const nextLine = lines[activeIndex + 1];
+               if (nextLine) {
+                   insertAt = nextLine.seconds; // Insert at start of next line
+               } else {
+                   insertAt = $duration; // End of podcast
+               }
            }
 
            console.log(`[Insert] User asked at ${time.toFixed(2)}, inserting at ${insertAt.toFixed(2)}`);
@@ -228,75 +243,53 @@
                userQuery: q
            });
            
-           // Modify Blocks
-           blocks.update(currentBlocks => {
-               const targetIdx = currentBlocks.findIndex(b => insertAt >= b.globalStart && insertAt < b.globalStart + b.duration);
-               
-               const aiBlock: TimelineBlock = {
-                   id: `ai-${Date.now()}`,
-                   type: 'generated',
-                   globalStart: 0,
-                   duration: response.generatedDuration,
-                   sourceStart: 0,
-                   audioUrl: response.generatedAudioUrl,
-                   color: 'bg-indigo-500'
-               };
+           // Create AI block
+           const aiBlock: TimelineBlock = {
+               id: `ai-${Date.now()}`,
+               type: 'generated',
+               globalStart: insertAt, // Will be recalculated
+               duration: response.generatedDuration,
+               sourceStart: 0,
+               audioUrl: response.generatedAudioUrl,
+               color: 'bg-indigo-500'
+           };
 
-               if (targetIdx === -1) {
+           // Find insertion index (insert after the block that ends at insertAt)
+           blocks.update(currentBlocks => {
+               const insertIdx = currentBlocks.findIndex(b => insertAt >= b.globalStart && insertAt < b.globalStart + b.duration);
+               
+               if (insertIdx === -1) {
+                   // Insert at end
                    return [...currentBlocks, aiBlock];
                }
-
-               const target = currentBlocks[targetIdx];
-               const offset = insertAt - target.globalStart;
                
-               // Reuse existing ID for pre-block to avoid re-rendering audio if it's playing
-               // Actually, splitting usually means new identity for parts. 
-               // Let's keep ID for Part A to keep it smooth?
-               
-               const pre: TimelineBlock = { 
-                   ...target, 
-                   duration: offset 
-                   // ID stays same? No, let's append suffix if needed, but for smoothness keep if start
-               }; 
-               
-               const post: TimelineBlock = {
-                   ...target,
-                   id: target.id + '-post-' + Date.now(), // New ID for part B
-                   sourceStart: target.sourceStart + offset,
-                   duration: target.duration - offset
-               };
-
-               const newSub = [];
-               if (pre.duration > 0.05) newSub.push(pre);
-               newSub.push(aiBlock);
-               if (post.duration > 0.05) newSub.push(post);
-               
+               // Insert after the current block
                const res = [...currentBlocks];
-               res.splice(targetIdx, 1, ...newSub);
+               res.splice(insertIdx + 1, 0, aiBlock);
                return res;
            });
            
            recalcGlobals();
            
            // Update Transcript
-           const newLines = response.transcript.map(l => ({
+           const newLines = response.transcript.map((l: any) => ({
                ...l,
                seconds: insertAt + (l.relativeStart || 0),
-               type: 'generated'
+               type: 'generated' as const
            }));
            
            transcript.update(ts => {
                const shifted = ts.map(l => {
-                   if (l.seconds >= insertAt - 0.05) {
+                   if (l.seconds >= insertAt) {
                        return { ...l, seconds: l.seconds + response.generatedDuration };
                    }
                    return l;
                });
-               const idx = shifted.findIndex(t => t.seconds > insertAt);
+               const idx = shifted.findIndex(t => t.seconds >= insertAt);
                if (idx === -1) return [...shifted, ...newLines];
                
                const final = [...shifted];
-               final.splice(idx, 0, ...newLines as any); // Cast for type compat
+               final.splice(idx, 0, ...newLines);
                return final;
            });
            
