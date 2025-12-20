@@ -35,7 +35,7 @@
                         return {
                             id: `line-${i}`,
                             type: 'original' as const,
-                            globalStart: line.seconds,
+                            globalStart: line.seconds, // Initially same as source
                             duration: blockDuration,
                             sourceStart: line.seconds,
                             audioUrl: 'main',
@@ -43,7 +43,7 @@
                         };
                     });
                     blocks.set(initialBlocks);
-                    recalcGlobals();
+                    duration.set(d); // Set duration directly, don't recalc
                 }
             }
         };
