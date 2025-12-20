@@ -39,6 +39,8 @@ export const progress = derived(
     ([$virtualTime, $totalDuration]) => $totalDuration ? ($virtualTime / $totalDuration) * 100 : 0
 );
 
+let lastLoggedHighlight = -1;
+
 export const activeLineIndex = derived(
     [virtualTime, transcript],
     ([$virtualTime, $transcript]) => {
@@ -47,12 +49,11 @@ export const activeLineIndex = derived(
             return $virtualTime >= line.seconds && (!nextLine || $virtualTime < nextLine.seconds);
         });
         
-        // Debug logging
-        if (idx !== -1 && $transcript[idx]) {
+        // Only log when highlight changes
+        if (idx !== lastLoggedHighlight && idx !== -1 && $transcript[idx]) {
             const line = $transcript[idx];
-            console.log(`[HIGHLIGHT] vTime=${$virtualTime.toFixed(2)}s -> Line ${idx}: "${line.speaker}: ${line.content.substring(0, 20)}..." @ ${line.seconds.toFixed(2)}s`);
-        } else {
-            console.log(`[HIGHLIGHT] vTime=${$virtualTime.toFixed(2)}s -> NO MATCH (idx=${idx})`);
+            console.log(`[HIGHLIGHT] Line ${idx}: "${line.speaker}: ${line.content.substring(0, 30)}..." @ ${line.seconds.toFixed(2)}s`);
+            lastLoggedHighlight = idx;
         }
         
         return idx;

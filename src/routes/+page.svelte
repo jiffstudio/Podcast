@@ -54,6 +54,7 @@
   });
 
   // --- Core Logic: Sync Virtual Time from Audio Playback ---
+  let lastLoggedVTime = -1;
   function updateVirtualTimeFromAudio(audioId: string, audioTime: number) {
       const seg = currentSegment;
       if (!seg || seg.audioId !== audioId) return;
@@ -65,7 +66,11 @@
           transitionToNext();
       } else {
           virtualTime.set(newVirtualTime);
-          console.log(`[VTime] ${newVirtualTime.toFixed(2)}s (from ${audioId})`);
+          // Only log every 1s
+          if (Math.abs(newVirtualTime - lastLoggedVTime) > 1.0) {
+              console.log(`[VTime] ${newVirtualTime.toFixed(2)}s (from ${audioId})`);
+              lastLoggedVTime = newVirtualTime;
+          }
       }
   }
 
@@ -271,26 +276,20 @@
               // 1. For AI lines within this segment, keep relativeStart proportion
               // 2. Shift lines after the OLD segment end
               transcript.update(ts => {
-                  console.log(`[Transcript Correction] segStart=${segStart.toFixed(2)}, oldSegEnd=${oldSegEnd.toFixed(2)}, newSegEnd=${newSegEnd.toFixed(2)}`);
-                  
-                  return ts.map((l, idx) => {
+                  const updated = ts.map(l => {
                       // If this is a generated line with a relativeStart field
                       if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds < oldSegEnd + 0.1) {
-                          // Recalculate based on relativeStart
-                          const newSeconds = segStart + l.relativeStart;
-                          console.log(`[Transcript] Line ${idx} (AI internal): ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (relativeStart=${l.relativeStart.toFixed(2)})`);
-                          return { ...l, seconds: newSeconds };
+                          return { ...l, seconds: segStart + l.relativeStart };
                       }
                       // If this is after the OLD segment end, shift it
                       if (l.seconds >= oldSegEnd - 0.1) {
-                          const newSeconds = l.seconds + diff;
-                          console.log(`[Transcript] Line ${idx} (after segment): ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)}`);
-                          return { ...l, seconds: newSeconds };
+                          return { ...l, seconds: l.seconds + diff };
                       }
-                      // Otherwise, keep as is
-                      console.log(`[Transcript] Line ${idx} (unchanged): ${l.speaker} @ ${l.seconds.toFixed(2)}`);
                       return l;
                   });
+                  
+                  // Sort by seconds to maintain order
+                  return updated.sort((a, b) => a.seconds - b.seconds);
               });
           }
       };
