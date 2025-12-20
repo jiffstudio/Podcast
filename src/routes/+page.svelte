@@ -245,11 +245,15 @@
               console.log(`[AI Audio] Correcting ${id}: ${expectedDuration.toFixed(2)} -> ${realDuration.toFixed(2)}`);
               
               const diff = realDuration - expectedDuration;
+              const segStart = seg.virtualStart;
+              const oldSegEnd = seg.virtualEnd;
+              const newSegEnd = segStart + realDuration;
+              
               segments.update(segs => {
                   const idx = segs.findIndex(s => s.id === id);
                   if (idx === -1) return segs;
                   
-                  segs[idx].virtualEnd += diff;
+                  segs[idx].virtualEnd = newSegEnd;
                   segs[idx].sourceEnd = realDuration;
                   
                   // Shift subsequent segments
@@ -260,14 +264,25 @@
                   
                   return [...segs];
               });
-              
+
               totalDuration.update(d => d + diff);
               
-              // Only shift transcript lines AFTER this AI segment
-              const aiSegmentEnd = seg.virtualEnd; // Already updated above
-              transcript.update(ts => ts.map(l => 
-                  l.seconds >= aiSegmentEnd ? { ...l, seconds: l.seconds + diff } : l
-              ));
+              // Update transcript:
+              // 1. For AI lines within this segment, keep relativeStart proportion
+              // 2. Shift lines after the OLD segment end
+              transcript.update(ts => ts.map(l => {
+                  // If this is a generated line with a relativeStart field
+                  if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds < oldSegEnd + 0.1) {
+                      // Recalculate based on relativeStart
+                      return { ...l, seconds: segStart + l.relativeStart };
+                  }
+                  // If this is after the OLD segment end, shift it
+                  if (l.seconds >= oldSegEnd - 0.1) {
+                      return { ...l, seconds: l.seconds + diff };
+                  }
+                  // Otherwise, keep as is
+                  return l;
+              }));
           }
       };
       
