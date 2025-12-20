@@ -302,9 +302,15 @@
 
           userQuery = "";
           
-      } catch (e) {
+      } catch (e: any) {
           console.error(e);
-          alert("Interaction failed: " + e); // Temporary feedback
+          // Try to get detailed logs from the error if available
+          let detailedMsg = e.message;
+          try {
+              // The API returns { error, debugLogs }
+              // If it's a fetch error, we might need to parse the response
+          } catch(err) {}
+          alert("Interaction failed: " + detailedMsg); 
       } finally {
           isThinking = false;
       }

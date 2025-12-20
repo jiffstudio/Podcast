@@ -16,7 +16,9 @@ export async function handleUserQuery(req: AiInteractionRequest): Promise<AiInte
         });
 
         if (!response.ok) {
-            throw new Error(`API Error: ${response.statusText}`);
+            const errData = await response.json().catch(() => ({}));
+            const logStr = errData.debugLogs ? "\n\nDebug Logs:\n" + errData.debugLogs.join("\n") : "";
+            throw new Error(`API Error: ${response.statusText} ${errData.error || ""}${logStr}`);
         }
 
         const data: AiInteractionResponse = await response.json();
