@@ -61,10 +61,19 @@
 
   onMount(() => {
     if (mainAudio) {
+      if (mainAudio.readyState >= 1) {
+          // Metadata already loaded
+          const d = mainAudio.duration;
+          segments[0].duration = d;
+          recalculateGlobalTimeline();
+          segments = segments; // Trigger reactivity
+      }
+
       mainAudio.addEventListener('loadedmetadata', () => {
         const d = mainAudio.duration;
         segments[0].duration = d;
         recalculateGlobalTimeline();
+        segments = segments; // Trigger reactivity
       });
       
       mainAudio.addEventListener('timeupdate', () => {
@@ -76,11 +85,6 @@
       
       mainAudio.addEventListener('ended', () => {
         if (currentAudioSource === 'main') {
-             // If main ends, but there might be more segments? 
-             // Currently simplified: End of main means end of playback unless segments logic says otherwise
-             // But actually we might have segments AFTER the current main part.
-             // We need to check if we are at the end of the Last segment.
-             
              // Simplification: Check if we are at the very end of the global timeline
              if (Math.abs(currentTime - duration) < 1) {
                 isPlaying = false;
@@ -261,6 +265,7 @@
           ];
           
           recalculateGlobalTimeline();
+          segments = segments; // Trigger reactivity update after mutation
           
           // 2. Insert and Shift Transcript
           // Shift all existing lines after insertion point
@@ -299,6 +304,7 @@
           
       } catch (e) {
           console.error(e);
+          alert("Interaction failed: " + e); // Temporary feedback
       } finally {
           isThinking = false;
       }
