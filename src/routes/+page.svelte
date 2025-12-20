@@ -1,749 +1,491 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { 
-    Play, Pause, SkipBack, SkipForward, Clock, Heart, 
-    Share2, ListMusic, MessageSquare, Info,
-    RotateCw, RotateCcw, Settings2, Send, Sparkles, X
+    Play, Pause, Heart, Share2, ListMusic, MessageSquare, 
+    RotateCw, RotateCcw, Send, Sparkles, X
   } from 'lucide-svelte';
   import transcriptData from '$lib/transcript.json';
   import { handleUserQuery } from '$lib/api';
-  import type { PodcastSegment, TranscriptLine } from '$lib/types';
+  import type { TranscriptLine } from '$lib/types';
 
-  let isPlaying = false;
-  let currentTime = 0; 
-  let duration = 0; 
-  let playbackSpeed = 1.0;
+  // --- 1. The Universal Data Structure ---
+  interface TimelineBlock {
+      id: string;
+      type: 'original' | 'generated';
+      
+      // Global Timeline Coordinates (The Virtual Player)
+      globalStart: number;
+      duration: number;
+      // Derived helper
+      get globalEnd() { return this.globalStart + this.duration; }
+
+      // Source Media Coordinates (The Real Player)
+      sourceStart: number; 
+      audioUrl: string; // URL for generated, or 'main' for original
+      
+      color: string;
+  }
+
+  // --- State ---
+  let blocks: TimelineBlock[] = [];
+  let transcript: TranscriptLine[] = transcriptData.map(t => ({ ...t, type: 'original' }));
   
-  // Audio Elements
+  // Virtual Player State
+  let currentTime = 0;
+  let duration = 0;
+  let isPlaying = false;
+  let playbackSpeed = 1.0;
+
+  // Real Audio Elements
   let mainAudio: HTMLAudioElement;
   let aiAudio: HTMLAudioElement;
-  let currentAudioSource: 'main' | 'ai' = 'main';
-  
-  // UI Refs
-  let transcriptContainer: HTMLElement;
-  let inputElement: HTMLInputElement;
 
-  // State for AI Interaction
+  // UI State
   let userQuery = "";
   let isThinking = false;
   let showInput = false;
+  let transcriptContainer: HTMLElement;
+  let inputElement: HTMLInputElement;
   
-  // Robust state tracking
-  let activeSegmentIndex = 0;
-  
-  // Logging
-  function addLog(msg: string) {
-      console.log(`[Frontend] ${msg}`);
-  }
-  
-  // Data State
-  let segments: PodcastSegment[] = [
-      {
-          id: 'main',
-          type: 'original',
-          start: 0,
-          duration: 0, // Will be set on load
-          globalStart: 0,
-          color: 'bg-emerald-500'
-      }
-  ];
-  
-  let transcript: TranscriptLine[] = transcriptData.map(t => ({
-      ...t,
-      type: 'original'
-  }));
+  // Helpers for robust sync
+  let activeBlockIndex = -1; // Derived from currentTime, cached for performance
 
-  // Find current active line index
-  $: activeLineIndex = transcript.findIndex((line, i) => {
-    const nextLine = transcript[i + 1];
-    return currentTime >= line.seconds && (!nextLine || currentTime < nextLine.seconds);
-  });
-
-  // Scroll to active line
-  $: if (activeLineIndex !== -1 && transcriptContainer) {
-    const activeElement = document.getElementById(`line-${activeLineIndex}`);
-    if (activeElement) {
-      activeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }
-
+  // --- Initialization ---
   onMount(() => {
-    if (mainAudio) {
-      const initMain = () => {
-          if (segments.length === 1 && segments[0].type === 'original') {
-              const d = mainAudio.duration;
-              if (isFinite(d)) {
-                  segments[0].duration = d;
-                  recalculateGlobalTimeline();
-                  segments = segments;
+      // Initialize with one big block representing the original podcast
+      if (mainAudio) {
+          mainAudio.onloadedmetadata = () => {
+              if (blocks.length === 0) {
+                  const d = mainAudio.duration;
+                  if (isFinite(d)) {
+                      blocks = [{
+                          id: 'main-start',
+                          type: 'original',
+                          globalStart: 0,
+                          duration: d,
+                          sourceStart: 0,
+                          audioUrl: 'main',
+                          color: 'bg-emerald-500'
+                      }];
+                      recalcGlobals();
+                  }
               }
-          }
-      };
-
-      if (mainAudio.readyState >= 1) initMain();
-      mainAudio.onloadedmetadata = initMain;
-      
-      mainAudio.ontimeupdate = () => {
-        if (currentAudioSource === 'main') {
-            updateTime();
-            checkSegmentTransition();
-        }
-      };
-      
-      // Auto-recover if ended event fires prematurely
-      mainAudio.onended = () => {
-          if (currentAudioSource === 'main' && isPlaying) {
-              checkSegmentTransition();
-          }
-      };
-    }
-
-    if (aiAudio) {
-        aiAudio.onloadedmetadata = () => {
-            const actualDuration = aiAudio.duration;
-            addLog(`AI Audio Metadata loaded: ${actualDuration.toFixed(2)}s`);
-            
-            // Find which segment corresponds to this audio
-            const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
-            if (aiSegIndex !== -1) {
-                const seg = segments[aiSegIndex];
-                const oldDuration = seg.duration;
-                const diff = actualDuration - oldDuration;
-                
-                if (Math.abs(diff) < 0.05) return; 
-
-                addLog(`Correcting AI duration: ${oldDuration.toFixed(2)} -> ${actualDuration.toFixed(2)}`);
-                
-                segments[aiSegIndex].duration = actualDuration;
-                recalculateGlobalTimeline();
-                const globalStart = segments[aiSegIndex].globalStart;
-                
-                // Recalibrate transcript lines
-                transcript = transcript.map(line => {
-                    if (line.type === 'generated' && line.seconds >= globalStart - 0.1 && line.seconds <= globalStart + oldDuration + 0.1) {
-                         const ratio = line.relativeRatio !== undefined ? line.relativeRatio : 0;
-                         return { ...line, seconds: globalStart + (actualDuration * ratio) };
-                    }
-                    if (line.seconds > globalStart + oldDuration - 0.1) {
-                        return { ...line, seconds: line.seconds + diff };
-                    }
-                    return line;
-                });
-                
-                segments = [...segments];
-            }
-        };
-
-        aiAudio.ontimeupdate = () => {
-            if (currentAudioSource === 'ai') {
-                updateTime();
-                checkSegmentTransition();
-            }
-        };
-        
-        aiAudio.onended = () => {
-             if (currentAudioSource === 'ai' && isPlaying) {
-                  transitionToNext();
-             }
-        };
-    }
-  });
-  
-  function recalculateGlobalTimeline() {
-      let currentGlobal = 0;
-      for (let i = 0; i < segments.length; i++) {
-          segments[i].globalStart = currentGlobal;
-          currentGlobal += segments[i].duration;
-      }
-      duration = currentGlobal;
-  }
-
-  // --- Core Logic: Segment-based Time Sync ---
-  
-  // Update Global Time -> Syncs currentTime based on active segment's audio progress
-  function updateTime() {
-      const activeSeg = segments[activeSegmentIndex];
-      if (!activeSeg) return;
-
-      if (activeSeg.type === 'original') {
-          // Map main audio file time to segment relative time
-          const relativeTime = mainAudio.currentTime - activeSeg.start;
+          };
           
-          // Only update if within reasonable bounds (prevent jumping when seeking)
-          if (relativeTime >= -0.5 && relativeTime <= activeSeg.duration + 0.5) {
-             const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
-             currentTime = activeSeg.globalStart + clampedRelative;
+          // The Driver: Main Audio updates the Virtual Time
+          mainAudio.ontimeupdate = () => syncVirtualTime(mainAudio, 'original');
+          mainAudio.onended = checkTransition; // Handle natural finish
+      }
+
+      if (aiAudio) {
+          // The Driver: AI Audio updates the Virtual Time
+          aiAudio.ontimeupdate = () => syncVirtualTime(aiAudio, 'generated');
+          aiAudio.onended = checkTransition; // Handle natural finish
+          
+          // Dynamic Duration Fixer
+          aiAudio.onloadedmetadata = () => {
+              const src = aiAudio.src;
+              const realDuration = aiAudio.duration;
+              if (!isFinite(realDuration)) return;
+
+              // Find blocks using this URL and correct their duration
+              let changed = false;
+              blocks.forEach(b => {
+                  if (b.type === 'generated' && b.audioUrl === src) {
+                      if (Math.abs(b.duration - realDuration) > 0.1) {
+                          console.log(`[System] Correcting duration for ${b.id}: ${b.duration} -> ${realDuration}`);
+                          b.duration = realDuration;
+                          changed = true;
+                      }
+                  }
+              });
+              
+              if (changed) {
+                  recalcGlobals();
+                  // Recalculate transcript map if needed (simplified for now)
+              }
+          };
+      }
+  });
+
+  // --- Core Logic 1: The "Virtual -> Real" Mapper ---
+
+  // Called when the real audio plays. It updates the virtual slider.
+  function syncVirtualTime(sourceAudio: HTMLAudioElement, sourceType: 'original' | 'generated') {
+      const currentBlock = blocks.find(b => 
+          currentTime >= b.globalStart && currentTime < b.globalStart + b.duration
+      );
+
+      // Only allow the "correct" audio source to update time
+      if (currentBlock && currentBlock.type === sourceType) {
+          const localTime = sourceAudio.currentTime;
+          // Virtual Time = Block Start + (Real Time - Block Source Offset)
+          const newGlobal = currentBlock.globalStart + (localTime - currentBlock.sourceStart);
+          
+          // Anti-jitter: only update if significant difference or normal playback
+          if (Math.abs(newGlobal - currentTime) > 0.05) {
+               currentTime = newGlobal;
           }
-      } else {
-          const relativeTime = aiAudio.currentTime;
-          const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
-          currentTime = activeSeg.globalStart + clampedRelative;
+          
+          // Check for block end
+          if (localTime >= currentBlock.sourceStart + currentBlock.duration - 0.1) {
+              checkTransition();
+          }
       }
   }
 
-  // Check Transition -> Handles moving to next segment when audio ends/reaches boundary
-  function checkSegmentTransition() {
-      const activeSeg = segments[activeSegmentIndex];
-      if (!activeSeg) return;
-
-      // We rely on the audio source's own time to detect end
-      // But we need to check bounds manually for 'original' segments since they are slices
+  // Called when User seeks or Block changes. It forces the real audio to match virtual time.
+  function syncRealPlayer() {
+      const blockIdx = blocks.findIndex(b => currentTime >= b.globalStart && currentTime < b.globalStart + b.duration);
       
-      if (activeSeg.type === 'original') {
-          // Check if mainAudio passed the segment end
-          if (mainAudio.currentTime >= activeSeg.start + activeSeg.duration - 0.1) { // 0.1s tolerance
-               transitionToNext();
-          }
-      } else {
-          // For AI, we can check if it ended or is close to duration
-          if (aiAudio.ended || aiAudio.currentTime >= activeSeg.duration - 0.1) {
-              transitionToNext();
-          }
-      }
-  }
-  
-  function transitionToNext() {
-      if (activeSegmentIndex < segments.length - 1) {
-          addLog(`Transitioning segment ${activeSegmentIndex} -> ${activeSegmentIndex + 1}`);
-          playSegment(activeSegmentIndex + 1);
-      } else {
-          // End of playback
+      if (blockIdx === -1) {
+          // End of stream
           isPlaying = false;
           mainAudio.pause();
           aiAudio.pause();
+          return;
+      }
+
+      const block = blocks[blockIdx];
+      activeBlockIndex = blockIdx;
+      
+      // Calculate where we should be in the source file
+      const localOffset = currentTime - block.globalStart;
+      const targetSourceTime = block.sourceStart + localOffset;
+
+      console.log(`[Sync] Global: ${currentTime.toFixed(2)}s -> Block: ${block.type} -> Local: ${targetSourceTime.toFixed(2)}s`);
+
+      if (block.type === 'original') {
+          aiAudio.pause(); // Mute the other
+          
+          // Only seek if necessary (prevent skipping)
+          if (Math.abs(mainAudio.currentTime - targetSourceTime) > 0.2) {
+              mainAudio.currentTime = targetSourceTime;
+          }
+          if (isPlaying) mainAudio.play();
+
+      } else {
+          mainAudio.pause(); // Mute the other
+          
+          if (aiAudio.src !== block.audioUrl) {
+              aiAudio.src = block.audioUrl;
+              aiAudio.load(); 
+              // Wait for load? Usually handled by browser, we set time after
+          }
+          
+          // For AI, sourceStart is usually 0, but good to be consistent
+          if (Math.abs(aiAudio.currentTime - targetSourceTime) > 0.2) {
+              aiAudio.currentTime = targetSourceTime;
+          }
+          if (isPlaying) aiAudio.play();
       }
   }
 
-  // Play Segment -> The Source of Truth for switching
-  // index: target segment index
-  // offset: relative time from START of that segment
-  function playSegment(index: number, offset: number = 0) {
-      if (index < 0 || index >= segments.length) return;
+  function checkTransition() {
+      // Find current block
+      const blockIdx = blocks.findIndex(b => currentTime >= b.globalStart && currentTime < b.globalStart + b.duration);
+      if (blockIdx === -1) return; // End
       
-      const prevSource = currentAudioSource;
-      activeSegmentIndex = index;
-      const segment = segments[index];
-      
-      addLog(`Playing segment ${index} (${segment.type}) at offset ${offset.toFixed(2)}`);
-
-      if (segment.type === 'original') {
-          currentAudioSource = 'main';
-          // Important: Only pause AI if we are switching sources
-          if (prevSource === 'ai') aiAudio.pause();
-          
-          // Seek main audio to: segment start time (in file) + requested offset
-          const targetFileTime = segment.start + offset;
-          
-          // Optimization: Don't seek if we are already close enough (avoid skipping)
-          // Unless it's an explicit seek (offset might change) - actually always seek for safety
-          if (Math.abs(mainAudio.currentTime - targetFileTime) > 0.1) {
-              mainAudio.currentTime = targetFileTime;
-          }
-          
-          if (isPlaying) {
-              mainAudio.play().catch(e => console.error("Play error:", e));
-          }
-      } else {
-          currentAudioSource = 'ai';
-          if (prevSource === 'main') mainAudio.pause();
-          
-          if (segment.audioUrl && aiAudio.src !== segment.audioUrl) {
-              aiAudio.src = segment.audioUrl;
-          }
-          
-          // For AI files, offset is just the time
-          if (Math.abs(aiAudio.currentTime - offset) > 0.1) {
-              aiAudio.currentTime = offset;
-          }
-          
-          if (isPlaying) {
-              aiAudio.play().catch(e => console.error("Play error:", e));
+      const block = blocks[blockIdx];
+      // Are we at the end of this block?
+      if (currentTime >= block.globalStart + block.duration - 0.2) {
+          // Move to next block start
+          if (blockIdx + 1 < blocks.length) {
+              const nextBlock = blocks[blockIdx + 1];
+              console.log("[Transition] Moving to next block");
+              currentTime = nextBlock.globalStart;
+              syncRealPlayer();
+          } else {
+              console.log("[Transition] End of content");
+              isPlaying = false;
+              currentTime = duration;
           }
       }
+  }
+
+  // --- Core Logic 2: The "Cut & Paste" Manager ---
+
+  function recalcGlobals() {
+      let t = 0;
+      for (let b of blocks) {
+          b.globalStart = t;
+          t += b.duration;
+      }
+      duration = t;
+      blocks = [...blocks]; // Reactivity
   }
 
   async function handleAskQuestion() {
       if (!userQuery.trim()) return;
-      
       isThinking = true;
-      showInput = false; 
-      
+      showInput = false;
+
       try {
-          const response = await handleUserQuery({
-              currentTimestamp: currentTime,
-              userQuery: userQuery
-          });
+           // 1. Determine "Virtual" Insertion Point
+           // Using the sentence boundary logic just to find the TIME.
+           let insertAtGlobalTime = currentTime;
+           
+           // Find nearest sentence end
+           const activeLine = transcript.find(l => currentTime >= l.seconds && (!transcript[transcript.indexOf(l)+1] || currentTime < transcript[transcript.indexOf(l)+1].seconds));
+           if (activeLine) {
+               const nextLine = transcript[transcript.indexOf(activeLine) + 1];
+               if (nextLine) insertAtGlobalTime = nextLine.seconds;
+               else insertAtGlobalTime = duration; // End
+           }
 
-          // --- Smart Insertion Logic Start ---
-          let safeInsertionPoint = currentTime + 0.1; 
-          
-          // 1. Find the active segment index based on currentTime
-          // We trust activeSegmentIndex usually, but let's double check with currentTime
-          // to be sure we are splitting the correct logical segment.
-          let targetSegmentIndex = segments.findIndex(s => 
-              currentTime >= s.globalStart && currentTime < s.globalStart + s.duration
-          );
-          
-          if (targetSegmentIndex === -1) targetSegmentIndex = activeSegmentIndex;
-          
-          const currentSeg = segments[targetSegmentIndex];
+           console.log(`[Insert] User asked at ${currentTime.toFixed(2)}, inserting at ${insertAtGlobalTime.toFixed(2)}`);
 
-          // 2. Find sentence boundary within this segment
-          const currentLineIndex = transcript.findIndex((line, i) => {
-              const nextLine = transcript[i + 1];
-              const endOfLine = nextLine ? nextLine.seconds : Infinity;
-              return currentTime >= line.seconds && currentTime < endOfLine;
-          });
-
-          if (currentLineIndex !== -1) {
-              const nextLine = transcript[currentLineIndex + 1];
-              if (nextLine) {
-                  // The ideal insertion point is the start of the next line
-                  let proposedPoint = nextLine.seconds;
-                  
-                  // Constraint: The proposed point MUST NOT be too far ahead (e.g., skipping whole segments)
-                  // It should be within the current segment OR exactly at its end.
-                  const segmentEnd = currentSeg.globalStart + currentSeg.duration;
-                  
-                  if (proposedPoint > segmentEnd + 0.05) {
-                      // If the sentence ends in a future segment, we should probably just 
-                      // append to the END of the current segment to be safe and simple.
-                      // Or, if we support cross-segment sentence detection, we'd need more complex logic.
-                      // For now, clamp to segment end.
-                      addLog(`Sentence ends in future segment. Clamping to end of current segment.`);
-                      safeInsertionPoint = segmentEnd;
-                  } else {
-                      safeInsertionPoint = proposedPoint;
-                      addLog(`Aligning insertion to sentence boundary: ${safeInsertionPoint.toFixed(2)}s`);
-                  }
-              } else {
-                  // No next line, append to end of segment
-                  safeInsertionPoint = currentSeg.globalStart + currentSeg.duration;
-              }
-          } else {
-               // Fallback if no line found
-               safeInsertionPoint = currentTime + 0.1;
-          }
-          
-          // 3. Determine Split Logic
-          // We are splitting 'currentSeg' at 'safeInsertionPoint'.
-          
-          // Re-verify the index in case safeInsertionPoint is exactly at start of next one
-          // Actually, we want to operate on 'targetSegmentIndex' specifically.
-          
-          if (currentSeg.type !== 'original') {
-              addLog("Cannot insert into non-original segment.");
-              return;
-          }
-          
-          const splitOffset = safeInsertionPoint - currentSeg.globalStart;
-          
-          // Handle Edge Case: Insertion is at the very end of the segment
-          const isAtEnd = Math.abs(splitOffset - currentSeg.duration) < 0.1;
-          const isAtStart = splitOffset < 0.1;
-          
-          const aiDuration = response.generatedDuration || 5; 
-
-          const aiSegment: PodcastSegment = {
-              id: `ai-${Date.now()}`,
-              type: 'generated',
-              start: 0, 
-              duration: aiDuration,
-              globalStart: 0,
-              color: 'bg-indigo-500',
-              audioUrl: response.generatedAudioUrl
-          };
-
-          let newSegments = [];
-          let nextActiveIndex = targetSegmentIndex; // Which segment index to play next?
-
-          if (isAtEnd) {
-               addLog("Inserting AFTER current segment");
-               // Just insert AI segment after this one
-               newSegments = [
-                   ...segments.slice(0, targetSegmentIndex + 1),
-                   aiSegment,
-                   ...segments.slice(targetSegmentIndex + 1)
-               ];
-               // We finished the current segment, so next we play the AI segment
-               nextActiveIndex = targetSegmentIndex + 1;
+           const response = await handleUserQuery({
+               currentTimestamp: insertAtGlobalTime, // Context is at insertion point
+               userQuery
+           });
+           
+           // 2. Modify the Blocks Array (Pure Logic)
+           
+           // Find which block we are cutting
+           const targetBlockIndex = blocks.findIndex(b => insertAtGlobalTime >= b.globalStart && insertAtGlobalTime < b.globalStart + b.duration);
+           
+           // If we are appending to the very end
+           if (targetBlockIndex === -1 && insertAtGlobalTime >= duration - 0.1) {
+               const newBlock: TimelineBlock = {
+                   id: `ai-${Date.now()}`,
+                   type: 'generated',
+                   globalStart: 0, // calc later
+                   duration: response.generatedDuration,
+                   sourceStart: 0,
+                   audioUrl: response.generatedAudioUrl,
+                   color: 'bg-indigo-500'
+               };
+               blocks.push(newBlock);
+           } 
+           else {
+               const targetBlock = blocks[targetBlockIndex];
                
-          } else if (isAtStart) {
-               addLog("Inserting BEFORE current segment");
-               // Insert AI segment before this one
-               newSegments = [
-                   ...segments.slice(0, targetSegmentIndex),
-                   aiSegment,
-                   ...segments.slice(targetSegmentIndex)
-               ];
-               // We want to play the AI segment immediately
-               nextActiveIndex = targetSegmentIndex; 
+               // Calculate local split point
+               const splitLocalOffset = insertAtGlobalTime - targetBlock.globalStart;
                
-          } else {
-               addLog("Splitting current segment");
-               // Standard Split
-               const partA: PodcastSegment = {
-                  ...currentSeg,
-                  id: currentSeg.id + '-A',
-                  duration: splitOffset
+               // Construct new blocks
+               const preBlock: TimelineBlock = {
+                   ...targetBlock,
+                   id: targetBlock.id + '-pre',
+                   duration: splitLocalOffset
                };
                
-               const partB: PodcastSegment = {
-                  ...currentSeg,
-                  id: currentSeg.id + '-B',
-                  start: currentSeg.start + splitOffset,
-                  duration: currentSeg.duration - splitOffset
+               const aiBlock: TimelineBlock = {
+                   id: `ai-${Date.now()}`,
+                   type: 'generated',
+                   globalStart: 0, // calc later
+                   duration: response.generatedDuration,
+                   sourceStart: 0,
+                   audioUrl: response.generatedAudioUrl,
+                   color: 'bg-indigo-500'
                };
                
-               newSegments = [
-                   ...segments.slice(0, targetSegmentIndex),
-                   partA,
-                   aiSegment,
-                   partB,
-                   ...segments.slice(targetSegmentIndex + 1)
-               ];
-               // We continue playing partA (which is at targetSegmentIndex)
-               // The transition logic will handle moving to AI (index + 1) when partA ends
-               nextActiveIndex = targetSegmentIndex;
-          }
+               const postBlock: TimelineBlock = {
+                   ...targetBlock,
+                   id: targetBlock.id + '-post',
+                   sourceStart: targetBlock.sourceStart + splitLocalOffset,
+                   duration: targetBlock.duration - splitLocalOffset
+               };
 
-          segments = newSegments;
-          recalculateGlobalTimeline();
-          segments = [...segments];
-          
-          // Update Transcript
-          transcript = transcript.map(line => {
-              if (line.seconds >= safeInsertionPoint - 0.05) { // Tolerance
-                  return { ...line, seconds: line.seconds + aiDuration };
-              }
-              return line;
-          });
+               // Robustness: If split point is basically start or end, don't create empty blocks
+               const newSubBlocks = [];
+               if (preBlock.duration > 0.1) newSubBlocks.push(preBlock);
+               newSubBlocks.push(aiBlock);
+               if (postBlock.duration > 0.1) newSubBlocks.push(postBlock);
+               
+               // Splice them in
+               blocks.splice(targetBlockIndex, 1, ...newSubBlocks);
+           }
 
-          // Insert new lines
-          const newLines = response.transcript.map(l => {
-              const ratio = (l.relativeStart || 0) / (response.generatedDuration || 5);
-              return {
-                  ...l,
-                  relativeRatio: ratio,
-                  seconds: safeInsertionPoint + (l.relativeStart || 0)
-              };
-          });
-          
-          // Find insertion index for transcript
-          // We want to insert strictly AFTER the line that ends before safeInsertionPoint
-          let insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
-          
-          if (insertLineIndex === -1) {
-              transcript = [...transcript, ...newLines];
-          } else {
-              transcript = [
-                  ...transcript.slice(0, insertLineIndex),
-                  ...newLines,
-                  ...transcript.slice(insertLineIndex)
-              ];
-          }
-          
-          // Preload and Update
-          aiAudio.src = response.generatedAudioUrl;
-          aiAudio.load();
-          
-          // Force active index update
-          activeSegmentIndex = nextActiveIndex;
-          
-          // If we inserted at the very end (isAtEnd), we are likely naturally transitioning.
-          // If we split (else), we are still in partA, so activeSegmentIndex is correct.
-          // BUT, we need to make sure the system acknowledges the new segment structure.
-          
-          addLog(`Insertion complete. New Active Index: ${activeSegmentIndex}. Total Segments: ${segments.length}`);
+           // 3. Rebuild the world
+           recalcGlobals();
+           
+           // 4. Update Transcript (Shift times)
+           const aiDuration = response.generatedDuration;
+           transcript = transcript.map(line => {
+               if (line.seconds >= insertAtGlobalTime - 0.05) {
+                   return { ...line, seconds: line.seconds + aiDuration };
+               }
+               return line;
+           });
+           
+           const newLines = response.transcript.map(l => ({
+               ...l,
+               seconds: insertAtGlobalTime + (l.relativeStart || 0),
+               type: 'generated'
+           }));
+           
+           // Insert transcript lines
+           const insertIdx = transcript.findIndex(t => t.seconds > insertAtGlobalTime);
+           if (insertIdx === -1) transcript.push(...newLines);
+           else transcript.splice(insertIdx, 0, ...newLines);
+           transcript = transcript; // Reactivity
+
+           // 5. Preload Audio
+           aiAudio.src = response.generatedAudioUrl;
+           aiAudio.load();
+
+           // 6. Resume Playback (Virtual Player handles the rest)
+           // We don't need to change currentTime, just let it flow. 
+           // When currentTime hits the new block boundary, syncRealPlayer will handle it.
+           
+           userQuery = "";
+
+      } catch (e: any) {
+          alert(e.message);
+      } finally {
+          isThinking = false;
+      }
+  }
+
+
+  // --- Interactions ---
 
   const togglePlay = () => {
-    if (currentAudioSource === 'main') {
-        if (isPlaying) mainAudio.pause();
-        else mainAudio.play();
+    if (isPlaying) {
+        isPlaying = false;
+        mainAudio.pause();
+        aiAudio.pause();
     } else {
-        if (isPlaying) aiAudio.pause();
-        else aiAudio.play();
+        isPlaying = true;
+        syncRealPlayer(); // Ensure we start at right place
     }
-    isPlaying = !isPlaying;
   };
 
+  const seek = (newTime: number) => {
+    currentTime = Math.max(0, Math.min(duration, newTime));
+    syncRealPlayer();
+  };
+  
   const changeSpeed = () => {
     const speeds = [1.0, 1.25, 1.5, 2.0, 0.5];
-    const currentIndex = speeds.indexOf(playbackSpeed);
-    playbackSpeed = speeds[(currentIndex + 1) % speeds.length];
+    playbackSpeed = speeds[(speeds.indexOf(playbackSpeed) + 1) % speeds.length];
     if (mainAudio) mainAudio.playbackRate = playbackSpeed;
     if (aiAudio) aiAudio.playbackRate = playbackSpeed;
   };
+
+  // --- UI Helpers ---
+  const formatTime = (s: number) => {
+    if (!s) return "00:00";
+    const min = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${min}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  $: activeLineIndex = transcript.findIndex((line, i) => {
+    const nextLine = transcript[i + 1];
+    return currentTime >= line.seconds && (!nextLine || currentTime < nextLine.seconds);
+  });
   
-  const seek = (seconds: number) => {
-      addLog(`Seeking to ${seconds.toFixed(2)}s`);
-      const targetTime = Math.max(0, Math.min(duration, seconds));
-      
-      const segmentIndex = segments.findIndex(s => 
-          targetTime >= s.globalStart && 
-          targetTime < s.globalStart + s.duration
-      );
-      
-      if (segmentIndex !== -1) {
-          const segment = segments[segmentIndex];
-          const offset = targetTime - segment.globalStart;
-          playSegment(segmentIndex, offset);
-          currentTime = targetTime;
-      }
-  };
-
-  const seekRelative = (delta: number) => {
-    seek(currentTime + delta);
-  };
-
-  const formatTime = (seconds: number) => {
-    if (!seconds && seconds !== 0) return "00:00";
-    const h = Math.floor(Math.abs(seconds) / 3600);
-    const m = Math.floor((Math.abs(seconds) % 3600) / 60);
-    const s = Math.floor(Math.abs(seconds) % 60);
-    
-    if (h > 0) {
-        return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-    }
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
-
-  // Progress percentage
-  $: progress = duration ? (currentTime / duration) * 100 : 0;
-  $: remainingTime = duration ? currentTime - duration : 0;
+  $: if (activeLineIndex !== -1 && transcriptContainer) {
+      document.getElementById(`line-${activeLineIndex}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 </script>
 
-<div class="flex flex-col h-screen bg-[#1a2e1a] text-[#e0f0e0] font-sans overflow-hidden selection:bg-[#4ade80] selection:text-[#1a2e1a]">
+<div class="flex flex-col h-screen bg-[#1a2e1a] text-[#e0f0e0] font-sans overflow-hidden select-none">
   
-  <audio bind:this={mainAudio} src="/podcast.mp3" preload="metadata"></audio>
-  <audio bind:this={aiAudio} src="" preload="auto"></audio>
+  <!-- Hidden Real Players -->
+  <audio bind:this={mainAudio} preload="metadata"></audio>
+  <audio bind:this={aiAudio} preload="auto"></audio>
 
-  <!-- Main Content Area -->
+  <!-- Main Content -->
   <div class="flex-1 flex overflow-hidden relative">
-    
-    <!-- Left Panel: Podcast Info & Cover -->
+    <!-- Left: Info -->
     <div class="hidden md:flex w-1/3 flex-col items-center justify-center p-8 border-r border-white/5 bg-[#142414]">
-      <div class="w-64 h-64 rounded-2xl bg-gradient-to-br from-green-400 to-emerald-800 shadow-2xl flex items-center justify-center mb-8 relative group overflow-hidden">
-        <!-- Mock Cover Art -->
+      <div class="w-64 h-64 rounded-2xl bg-gradient-to-br from-green-400 to-emerald-800 shadow-2xl flex items-center justify-center mb-8 relative">
         <span class="text-4xl font-bold text-white/90 text-center">罗永浩<br>x<br>影视飓风</span>
-        <div class="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors"></div>
       </div>
-      
-      <div class="text-center space-y-2 max-w-md">
-        <h1 class="text-2xl font-bold text-white leading-tight">罗永浩 x 影视飓风Tim：从"做个产品"到"做个梦"</h1>
-        <p class="text-emerald-400 text-lg font-medium hover:underline cursor-pointer">罗永浩的十字路口</p>
-      </div>
-
-      <div class="mt-8 flex gap-4">
-        <button class="p-2 rounded-full hover:bg-white/10 transition" title="Share">
-          <Share2 class="w-5 h-5 opacity-70" />
-        </button>
-        <button class="p-2 rounded-full hover:bg-white/10 transition" title="Like">
-          <Heart class="w-5 h-5 opacity-70" />
-        </button>
-      </div>
+      <h1 class="text-2xl font-bold text-white text-center mb-2">罗永浩 x 影视飓风Tim</h1>
+      <p class="text-emerald-400 text-lg">罗永浩的十字路口</p>
     </div>
 
-    <!-- Right Panel: Transcript -->
-    <div bind:this={transcriptContainer} class="flex-1 overflow-y-auto p-8 md:p-16 scroll-smooth relative">
-      <div class="max-w-3xl mx-auto space-y-8 py-10 pb-40">
-        
+    <!-- Right: Transcript -->
+    <div bind:this={transcriptContainer} class="flex-1 overflow-y-auto p-8 md:p-16 scroll-smooth pb-40">
+      <div class="max-w-3xl mx-auto space-y-8">
         {#each transcript as line, i}
           <div id="line-{i}" 
-               class="transition-all duration-300 cursor-pointer group"
-               on:click={() => seek(line.seconds)}
-               on:keydown={(e) => e.key === 'Enter' && seek(line.seconds)}
-               role="button"
-               tabindex="0">
-            <div class="flex items-baseline gap-4 mb-2">
-                 <span class="text-sm font-bold {line.type === 'generated' ? 'text-indigo-400' : 'text-emerald-500/80'} uppercase tracking-wide flex items-center gap-2">
-                    {#if line.type === 'generated'}
-                        <Sparkles class="w-3 h-3" />
-                    {/if}
-                    {line.speaker}
-                 </span>
-                 <span class="text-xs font-mono text-white/20 group-hover:text-white/40">{line.timestamp}</span>
+               class="cursor-pointer transition-all duration-300 {activeLineIndex === i ? 'opacity-100 scale-105' : 'opacity-40 hover:opacity-60'}"
+               on:click={() => seek(line.seconds)}>
+            <div class="flex items-center gap-2 mb-2 text-sm font-bold uppercase tracking-wide">
+                {#if line.type === 'generated'} <Sparkles class="w-3 h-3 text-indigo-400" /> {/if}
+                <span class={line.type === 'generated' ? 'text-indigo-400' : 'text-emerald-500'}>{line.speaker}</span>
+                <span class="text-xs text-white/20 font-mono font-normal">{formatTime(line.seconds)}</span>
             </div>
-            <p class="text-xl md:text-2xl lg:text-3xl leading-relaxed font-medium transition-all duration-300
-              {activeLineIndex === i ? 'text-white scale-100' : 'text-white/40 scale-95 blur-[0.5px] hover:text-white/60 hover:blur-0'}
-              {line.type === 'generated' ? 'italic text-indigo-100' : ''}">
-              {line.content}
+            <p class="text-2xl md:text-3xl font-medium leading-relaxed {line.type === 'generated' ? 'text-indigo-100 italic' : 'text-white'}">
+                {line.content}
             </p>
           </div>
         {/each}
-        
         {#if isThinking}
-            <div class="flex items-center gap-3 text-indigo-300 animate-pulse">
-                <Sparkles class="w-5 h-5" />
-                <span>AI 正在思考合适切入点并生成对话...</span>
+            <div class="flex items-center gap-3 text-indigo-300 animate-pulse mt-8">
+                <Sparkles class="w-6 h-6" />
+                <span class="text-xl">AI 正在生成平行对话...</span>
             </div>
         {/if}
       </div>
     </div>
-
   </div>
 
-  <!-- Bottom Player Bar -->
-  <div class="h-auto bg-[#1a2e1a]/95 backdrop-blur-xl border-t border-white/5 flex flex-col justify-center px-6 py-4 md:px-12 relative z-50 transition-all duration-300">
+  <!-- Bottom Player -->
+  <div class="bg-[#1a2e1a]/95 backdrop-blur-xl border-t border-white/5 px-6 py-4 z-50">
     
     <!-- Progress Bar -->
-    <div class="w-full flex items-center gap-4 mb-4 group cursor-pointer" 
+    <div class="flex items-center gap-4 mb-4 group cursor-pointer"
          on:click={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const clickX = e.clientX - rect.left;
-            const percentage = clickX / rect.width;
-            seek(duration * percentage);
-         }}
-         on:keydown={() => {}}
-         role="slider"
-         aria-valuenow={progress}
-         tabindex="0">
-      <span class="text-xs font-mono opacity-60 w-12 text-right">{formatTime(currentTime)}</span>
-      <div class="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden relative flex">
-        <!-- Render Segments -->
-        {#each segments as seg}
-             {#if seg.type === 'generated'}
-                <div class="absolute top-0 h-full {seg.color} opacity-50 z-10"
-                     style="left: {(seg.globalStart / duration) * 100}%; width: {(seg.duration / duration) * 100}%">
-                </div>
-             {/if}
+             const r = e.currentTarget.getBoundingClientRect();
+             seek((e.clientX - r.left) / r.width * duration);
+         }}>
+      <span class="text-xs font-mono w-10 text-right opacity-60">{formatTime(currentTime)}</span>
+      
+      <div class="flex-1 h-2 bg-white/10 rounded-full relative overflow-hidden">
+        <!-- Blocks Visualization -->
+        {#each blocks as b}
+            <div class="absolute top-0 bottom-0 {b.color} opacity-30 border-r border-black/10" 
+                 style="left: {b.globalStart/duration*100}%; width: {b.duration/duration*100}%"></div>
         {/each}
-
         <!-- Playhead -->
-        <div class="absolute top-0 left-0 h-full bg-emerald-500 rounded-full z-20" style="width: {progress}%">
-            <!-- Change color if in AI mode -->
-            {#if currentAudioSource === 'ai'}
-                <div class="absolute inset-0 bg-indigo-500 animate-pulse"></div>
-            {/if}
+        <div class="absolute top-0 bottom-0 bg-emerald-500 w-1 transition-all"
+             style="left: {currentTime/duration*100}%">
+             {#if blocks.find(b => currentTime >= b.globalStart && currentTime < b.globalEnd)?.type === 'generated'}
+                <div class="absolute -top-1 -bottom-1 -left-1 -right-1 bg-indigo-500 blur-sm"></div>
+             {/if}
+        </div>
+      </div>
+      
+      <span class="text-xs font-mono w-10 opacity-60">{formatTime(duration)}</span>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex justify-between items-center relative">
+        <!-- Speed & AI -->
+        <div class="flex gap-4 items-center flex-1">
+            <button class="text-xs font-bold px-2 py-1 border border-white/20 rounded hover:bg-white/10 text-emerald-400" on:click={changeSpeed}>{playbackSpeed}x</button>
+            <button class="flex items-center gap-2 text-xs font-bold text-white/60 hover:text-indigo-400 transition" on:click={() => { showInput = !showInput; tick().then(() => inputElement?.focus()); }}>
+                <Sparkles class="w-4 h-4" />
+                <span class="hidden md:inline">插话</span>
+            </button>
+        </div>
+
+        <!-- Playback -->
+        <div class="flex gap-8 items-center justify-center flex-1">
+            <button on:click={() => seek(currentTime - 15)}><RotateCcw class="w-6 h-6 opacity-80 hover:scale-110 transition" /></button>
+            <button on:click={togglePlay} class="bg-white text-black p-3 rounded-full hover:scale-105 transition shadow-lg shadow-emerald-900/40">
+                {#if isPlaying}<Pause class="w-6 h-6 fill-current" />{:else}<Play class="w-6 h-6 fill-current ml-1" />{/if}
+            </button>
+            <button on:click={() => seek(currentTime + 30)}><RotateCw class="w-6 h-6 opacity-80 hover:scale-110 transition" /></button>
         </div>
         
-        <!-- Hover handle -->
-        <div class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity z-30" style="left: {progress}%"></div>
-      </div>
-      <span class="text-xs font-mono opacity-60 w-14 text-right">{remainingTime < 0 ? '-' : ''}{formatTime(remainingTime)}</span>
-    </div>
-
-    <!-- Mobile-only Title Display -->
-    <div class="md:hidden flex items-center gap-3 mb-6">
-      <div class="w-10 h-10 rounded bg-gradient-to-br from-green-400 to-emerald-800 flex items-center justify-center shrink-0">
-        <span class="text-[10px] font-bold text-white/90 leading-tight text-center">罗永浩<br>Tim</span>
-      </div>
-      <div class="overflow-hidden">
-         <h2 class="text-sm font-bold text-white truncate">罗永浩 x 影视飓风Tim</h2>
-         <p class="text-xs text-emerald-400">罗永浩的十字路口</p>
-      </div>
-    </div>
-
-    <!-- Interaction Input Overlay (When active) -->
-    {#if showInput}
-        <div class="absolute inset-x-0 bottom-0 top-auto bg-[#1a2e1a] p-4 border-t border-white/10 z-50 flex flex-col gap-3 shadow-2xl">
-            <div class="flex justify-between items-center mb-1">
-                <span class="text-sm font-bold text-indigo-400 flex items-center gap-2">
-                    <Sparkles class="w-4 h-4" />
-                    向嘉宾提问 / 插入话题
-                </span>
-                <button on:click={() => showInput = false} class="text-white/50 hover:text-white">
-                    <X class="w-5 h-5" />
-                </button>
+        <div class="flex-1"></div>
+        
+        <!-- Input Overlay -->
+        {#if showInput}
+            <div class="absolute bottom-full left-0 right-0 mb-4 bg-[#142414] border border-white/10 rounded-xl p-4 shadow-2xl flex gap-3 animate-in slide-in-from-bottom-2">
+                <input bind:this={inputElement} bind:value={userQuery} placeholder="输入你想问的问题..." class="flex-1 bg-black/30 border border-white/10 rounded px-3 text-white focus:outline-none focus:border-indigo-500" on:keydown={e => e.key === 'Enter' && handleAskQuestion()} />
+                <button on:click={handleAskQuestion} class="bg-indigo-600 px-4 rounded text-white hover:bg-indigo-500"><Send class="w-4 h-4" /></button>
+                <button on:click={() => showInput = false} class="text-white/40 hover:text-white"><X class="w-5 h-5" /></button>
             </div>
-            <div class="flex gap-2">
-                <input 
-                    bind:this={inputElement}
-                    bind:value={userQuery}
-                    type="text" 
-                    placeholder="例如：问问Tim怎么看待AI对视频创作的影响？"
-                    class="flex-1 bg-black/20 border border-white/10 rounded-lg px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-indigo-500 transition-colors"
-                    on:keydown={(e) => e.key === 'Enter' && handleAskQuestion()}
-                />
-                <button 
-                    on:click={handleAskQuestion}
-                    disabled={!userQuery.trim()}
-                    class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-white rounded-lg px-4 flex items-center justify-center transition-colors">
-                    <Send class="w-5 h-5" />
-                </button>
-            </div>
-        </div>
-    {/if}
-
-    <!-- Controls Row -->
-    <div class="flex items-center justify-between pb-2" class:opacity-0={showInput}> <!-- Hide controls when input is showing -->
-      
-      <!-- Left Controls -->
-      <div class="flex items-center gap-6 flex-1">
-        <button class="text-xs font-bold border border-white/20 rounded px-2 py-1 hover:bg-white/10 transition text-emerald-400" on:click={changeSpeed}>
-          {playbackSpeed.toFixed(1)}x
-        </button>
-        <!-- AI Interjection Button -->
-        <button class="hover:text-indigo-400 transition flex items-center gap-2 group relative" 
-                on:click={() => {
-                    showInput = true;
-                    tick().then(() => inputElement?.focus());
-                }}
-                title="Ask AI">
-           <div class="p-1.5 rounded-full border border-white/20 group-hover:border-indigo-400 group-hover:bg-indigo-500/20 transition-all">
-                <Sparkles class="w-4 h-4" />
-           </div>
-           <span class="hidden md:inline text-xs font-bold opacity-60 group-hover:opacity-100 group-hover:text-indigo-400">插话</span>
-        </button>
-      </div>
-
-      <!-- Center Controls (Play/Skip) -->
-      <div class="flex items-center gap-8 justify-center flex-1">
-        <button class="hover:text-white transition hover:scale-110 active:scale-95" on:click={() => seekRelative(-15)}>
-          <div class="relative">
-            <RotateCcw class="w-7 h-7" />
-            <span class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[8px] font-bold mt-0.5">15</span>
-          </div>
-        </button>
-
-        <button class="bg-white text-black rounded-full p-4 hover:scale-105 active:scale-95 transition shadow-lg shadow-emerald-900/20 relative" on:click={togglePlay}>
-          {#if isPlaying}
-            <Pause class="w-8 h-8 fill-current" />
-          {:else}
-            <Play class="w-8 h-8 fill-current ml-1" />
-          {/if}
-          
-          {#if currentAudioSource === 'ai' && isPlaying}
-             <div class="absolute inset-0 rounded-full border-2 border-indigo-500 animate-ping opacity-20"></div>
-          {/if}
-        </button>
-
-        <button class="hover:text-white transition hover:scale-110 active:scale-95" on:click={() => seekRelative(30)}>
-          <div class="relative">
-             <RotateCw class="w-7 h-7" />
-             <span class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[8px] font-bold mt-0.5">30</span>
-          </div>
-        </button>
-      </div>
-
-      <!-- Right Controls -->
-      <div class="flex items-center gap-6 flex-1 justify-end">
-        <button class="hover:text-emerald-400 transition">
-          <ListMusic class="w-5 h-5" />
-        </button>
-         <button class="hover:text-emerald-400 transition relative">
-          <MessageSquare class="w-5 h-5" />
-          <span class="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full"></span>
-        </button>
-      </div>
+        {/if}
     </div>
   </div>
-
 </div>
-
-<style>
-  /* Custom Scrollbar for Transcript */
-  ::-webkit-scrollbar {
-    width: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
-  }
-</style>
