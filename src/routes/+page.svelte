@@ -77,13 +77,16 @@
   // --- Core Logic: Play Correct Audio at Virtual Time ---
   function syncAudioToVirtualTime(vTime: number, force = false) {
       const seg = findSegmentAt(vTime);
-      if (!seg) return;
+      if (!seg) {
+          console.log('[syncAudioToVirtualTime] No segment found at', vTime.toFixed(2));
+          return;
+      }
       
       const segmentChanged = !currentSegment || seg.id !== currentSegment.id;
       currentSegment = seg;
       
       if (segmentChanged || force) {
-          console.log(`[Play] Segment ${seg.id} (${seg.type})`);
+          console.log(`[Play] Segment ${seg.id} (${seg.type}), virtualRange: ${seg.virtualStart.toFixed(2)}-${seg.virtualEnd.toFixed(2)}`);
           activeAudioId = seg.audioId;
           
           // Pause all audio
@@ -94,6 +97,8 @@
           const offset = vTime - seg.virtualStart;
           const sourceTime = seg.sourceStart + offset;
           
+          console.log(`[Play] Source time: ${sourceTime.toFixed(2)}s, offset: ${offset.toFixed(2)}s`);
+          
           // Play the correct audio
           if (seg.audioId === 'main') {
               mainAudio.currentTime = sourceTime;
@@ -101,8 +106,17 @@
           } else {
               const aiAudio = aiAudios[seg.audioId];
               if (aiAudio) {
+                  console.log(`[Play] AI audio element exists:`, aiAudio.src.substring(0, 50));
                   aiAudio.currentTime = sourceTime;
-                  if ($isPlaying) aiAudio.play();
+                  if ($isPlaying) {
+                      aiAudio.play().then(() => {
+                          console.log(`[Play] AI audio playing, duration: ${aiAudio.duration.toFixed(2)}s`);
+                      }).catch(e => {
+                          console.error('[Play] AI audio play failed:', e);
+                      });
+                  }
+              } else {
+                  console.error(`[Play] AI audio element not found for ${seg.audioId}`);
               }
           }
       }
@@ -204,6 +218,8 @@
           for (const segment of response.segments) {
               const aiId = `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
               const aiDuration = segment.duration;
+              
+              console.log(`[Segment Create] ${segment.transcript.speaker}: id=${aiId}, duration=${aiDuration.toFixed(2)}s, insertTime=${currentInsertTime.toFixed(2)}s`);
               
               // Store audio URL
               aiAudioUrls[aiId] = segment.audioUrl;
