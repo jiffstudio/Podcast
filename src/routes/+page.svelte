@@ -273,9 +273,36 @@
               userQuery: userQuery
           });
 
-          // Insert AFTER current playback time with a small buffer
-          const safeInsertionPoint = currentTime + 0.1;
+          // --- Smart Insertion Logic Start ---
+          let safeInsertionPoint = currentTime + 0.1; // Default fallback
           
+          // Try to find the end of the current sentence (start of next line)
+          // We search in the *global* transcript
+          const currentLineIndex = transcript.findIndex((line, i) => {
+              const nextLine = transcript[i + 1];
+              // Handle boundaries safely
+              const endOfLine = nextLine ? nextLine.seconds : Infinity;
+              return currentTime >= line.seconds && currentTime < endOfLine;
+          });
+
+          if (currentLineIndex !== -1) {
+              const nextLine = transcript[currentLineIndex + 1];
+              if (nextLine) {
+                  // Found a next line, so we insert right before it starts
+                  // This preserves the current line fully
+                  safeInsertionPoint = nextLine.seconds;
+                  addLog(`Aligning insertion to sentence boundary: ${safeInsertionPoint.toFixed(2)}s`);
+              } else {
+                  // Last line. Insert at end of current segment if possible.
+                  const activeSeg = segments[activeSegmentIndex];
+                  if (activeSeg) {
+                      safeInsertionPoint = activeSeg.globalStart + activeSeg.duration;
+                  }
+              }
+          }
+          // --- Smart Insertion Logic End ---
+          
+          // Find segment to split
           const splitIndex = segments.findIndex(s => 
               safeInsertionPoint >= s.globalStart && 
               safeInsertionPoint < s.globalStart + s.duration
