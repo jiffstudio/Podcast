@@ -127,6 +127,15 @@
       const speed = $playbackSpeed;
       const segs = $segments; // Depend on segments too
       
+      // Safety: If no segments, can't do anything
+      if (segs.length === 0) {
+          if (playing && mainAudio) {
+              // Try to play main audio directly
+              if (mainAudio.paused) mainAudio.play().catch(() => {});
+          }
+          return;
+      }
+      
       const jumped = Math.abs(vTime - lastVirtualTime) > 0.5;
       lastVirtualTime = vTime;
       
@@ -331,7 +340,26 @@
   }
 
   // --- UI Interactions ---
-  const togglePlay = () => isPlaying.update(v => !v);
+  const togglePlay = () => {
+      // Ensure segments are initialized before playing
+      if ($segments.length === 0 && mainAudio && isFinite(mainAudio.duration)) {
+          const d = mainAudio.duration;
+          segments.set([{
+              id: 'main',
+              type: 'original',
+              virtualStart: 0,
+              virtualEnd: d,
+              audioId: 'main',
+              sourceStart: 0,
+              sourceEnd: d,
+              color: 'bg-emerald-500'
+          }]);
+          totalDuration.set(d);
+          console.log('[Init] Segments initialized on play:', d);
+      }
+      isPlaying.update(v => !v);
+  };
+  
   const seek = (time: number) => virtualTime.set(Math.max(0, Math.min($totalDuration, time)));
   const changeSpeed = () => {
     const speeds = [1.0, 1.25, 1.5, 2.0, 0.5];
