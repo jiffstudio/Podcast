@@ -1,8 +1,13 @@
 import { json } from '@sveltejs/kit';
 import { MINIMAX_API_KEY, DOUBAO_API_KEY, DOUBAO_BASE_URL } from '$env/static/private';
 import { Buffer } from 'buffer';
+import mp3Duration from 'mp3-duration';
+import { promisify } from 'util';
 
 import type { RequestHandler } from './$types';
+
+// Promisify mp3Duration
+const getDuration = promisify(mp3Duration);
 
 // MiniMax T2A V2 API URL
 const T2A_V2_URL = "https://api.minimaxi.com/v1/t2a_v2";
@@ -79,23 +84,19 @@ export const POST: RequestHandler = async ({ request }) => {
         // 3. Combine and return metadata
         const combinedBuffer = Buffer.concat([hostAudio, timAudio]);
         
-        // 重新计算并返回每一句话的精确开始时间（秒）
-        // 假设音频是顺序拼接的，我们需要知道罗永浩音频的确切时长
-        // MP3 128kbps = 16000 bytes/sec
-        const hostSeconds = hostAudio.length / 16000;
-        const timSeconds = timAudio.length / 16000;
-
-        // 为了确保不插在“前面”，我们可以在当前时间戳上加一个小缓冲，
-        // 或者更智能一点：让前端去决定到底是插在当前句子结束还是立即打断
-        // 这里我们把 insertionPoint 设为 currentTimestamp 往后一点点，
-        // 前端会负责找到最近的句子边界
-        const safeInsertionPoint = currentTimestamp + 0.5;
+        // Accurate duration calculation using mp3-duration
+        log("Calculating accurate duration...");
+        const hostSeconds = await getDuration(hostAudio);
+        const timSeconds = await getDuration(timAudio);
+        const totalSeconds = await getDuration(combinedBuffer);
+        
+        log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s, Total=${totalSeconds}s`);
 
         return json({
-            insertionPoint: safeInsertionPoint,
             generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
-            hostDuration: hostSeconds, // 罗永浩的确切时长
+            hostDuration: hostSeconds, 
             timDuration: timSeconds,
+            generatedDuration: totalSeconds,
             transcript: [
                 {
                     speaker: "罗永浩 (AI)",
@@ -108,7 +109,7 @@ export const POST: RequestHandler = async ({ request }) => {
                     speaker: "Tim (AI)",
                     content: timText,
                     timestamp: "AI-Gen",
-                    relativeStart: hostSeconds, // Tim 从罗永浩说完开始
+                    relativeStart: hostSeconds,
                     type: 'generated'
                 }
             ],
