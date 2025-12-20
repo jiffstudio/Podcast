@@ -1,17 +1,17 @@
 import { json } from '@sveltejs/kit';
 import { MINIMAX_API_KEY, DOUBAO_API_KEY, DOUBAO_BASE_URL } from '$env/static/private';
 import { Buffer } from 'buffer';
-import fs from 'fs';
-import path from 'path';
 
-const CLONE_URL = "https://api.minimaxi.com/v1/voice_clone";
-const UPLOAD_URL = "https://api.minimaxi.com/v1/files/upload";
+import type { RequestHandler } from './$types';
 
-// Initial File IDs (from your previous successful runs)
-let luoFileId = "346708620468307";
-let timFileId = "346708662636941";
+// MiniMax T2S (Text-to-Speech) API URL
+const T2S_URL = "https://api.minimaxi.com/v1/t2s/v2";
 
-export async function POST({ request }) {
+// Fixed Voice IDs as requested by user
+const LUO_VOICE_ID = "luo_clone_v1";
+const TIM_VOICE_ID = "tim_clone_v1";
+
+export const POST: RequestHandler = async ({ request }) => {
     const { userQuery, currentTimestamp } = await request.json();
     
     if (!userQuery) {
@@ -31,7 +31,7 @@ export async function POST({ request }) {
     try {
         // 1. Generate Script using Doubao
         const hostText = `说到这里，有个听众问了一个很有意思的问题：“${userQuery}”。Tim你怎么看？`;
-        let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。";
+        let timText = "这是一个非常好的角度。其实AI不仅仅是工具，更是创意的放大器。我们现在的很多选题，如果没有AI的辅助，可能根本无法在有限的时间内完成。";
         
         try {
             log("Calling Doubao API...");
@@ -42,8 +42,7 @@ export async function POST({ request }) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    // If 'doubao-1.8' fails, it means you need the Endpoint ID (ep-xxx)
-                    model: "doubao-1.8", 
+                    model: "doubao-seed-1-8-251215", 
                     messages: [
                         {
                             role: "system",
@@ -65,32 +64,33 @@ export async function POST({ request }) {
                      log("Doubao Success");
                 }
             } else {
-                log(`Doubao API Error: ${JSON.stringify(chatData.error || chatData)}`);
+                log(`Doubao API Error: ${chatData.error?.message || JSON.stringify(chatData)}`);
                 log("Using fallback script text.");
             }
         } catch (e: any) {
             log(`Doubao Network Error: ${e.message}`);
         }
 
-        // 2. Generate Audio
-        log("Generating host audio (TTS)...");
-        let hostAudio = await generateVoiceWithRetry(luoFileId, "luo_host", hostText, "static/luo_pure_2min.mp3", log);
+        // 2. Generate Audio using T2S with fixed voice IDs
+        log("Generating host audio (T2S)...");
+        const hostAudioBuffer = await generateT2S(LUO_VOICE_ID, hostText, log);
         
-        log("Generating guest audio (TTS)...");
-        let timAudio = await generateVoiceWithRetry(timFileId, "tim_response", timText, "static/tim_pure_2min.mp3", log);
+        log("Generating guest audio (T2S)...");
+        const timAudioBuffer = await generateT2S(TIM_VOICE_ID, timText, log);
 
-        if (!hostAudio || !timAudio) {
-            const errorMsg = `Audio generation failed. Host: ${!!hostAudio}, Guest: ${!!timAudio}`;
+        if (!hostAudioBuffer || !timAudioBuffer) {
+            const errorMsg = `Audio generation failed. Host: ${!!hostAudioBuffer}, Guest: ${!!timAudioBuffer}`;
             log(errorMsg);
             throw new Error(errorMsg);
         }
 
         // 3. Concatenate and Return
         log("Combining audio buffers...");
-        const combinedBuffer = Buffer.concat([hostAudio.buffer, timAudio.buffer]);
+        const combinedBuffer = Buffer.concat([hostAudioBuffer, timAudioBuffer]);
         const base64Audio = combinedBuffer.toString('base64');
         const audioUrl = `data:audio/mp3;base64,${base64Audio}`;
         
+        // Duration estimation: Bitrate 128kbps = 16KB/s
         const duration = combinedBuffer.length / 16000;
 
         return json({
@@ -109,11 +109,11 @@ export async function POST({ request }) {
                     speaker: "Tim (AI)",
                     content: timText,
                     timestamp: "AI-Gen",
-                    seconds: hostAudio.buffer.length / 16000,
+                    seconds: hostAudioBuffer.length / 16000,
                     type: 'generated'
                 }
             ],
-            debugLogs // Return logs to frontend for easier debugging
+            debugLogs 
         });
 
     } catch (e: any) {
@@ -125,113 +125,57 @@ export async function POST({ request }) {
     }
 }
 
-async function generateVoiceWithRetry(fileId: string, voiceId: string, text: string, samplePath: string, log: Function): Promise<{ buffer: Buffer } | null> {
-    // Attempt 1
-    log(`TTS Attempt 1 for ${voiceId} with ID ${fileId}`);
-    let result = await generateVoice(fileId, voiceId, text, log);
-    
-    if (!result) {
-        log(`TTS Attempt 1 failed for ${voiceId}. Re-uploading ${samplePath}...`);
-        if (fs.existsSync(samplePath)) {
-            const newFileId = await uploadFile(samplePath, log);
-            if (newFileId) {
-                log(`Upload success. New File ID: ${newFileId}. Retrying TTS...`);
-                // Update persistent IDs
-                if (voiceId.includes("luo")) luoFileId = newFileId;
-                else timFileId = newFileId;
-                
-                result = await generateVoice(newFileId, voiceId, text, log);
-                if (result) log(`TTS Attempt 2 success for ${voiceId}`);
-                else log(`TTS Attempt 2 failed for ${voiceId}`);
-            } else {
-                log(`Upload failed for ${samplePath}`);
-            }
-        } else {
-            log(`Sample file not found: ${samplePath}`);
-        }
-    } else {
-        log(`TTS Attempt 1 success for ${voiceId}`);
-    }
-    
-    return result ? { buffer: result } : null;
-}
-
-async function uploadFile(filePath: string, log: Function): Promise<string | null> {
+async function generateT2S(voiceId: string, text: string, log: Function): Promise<Buffer | null> {
     try {
-        const fullPath = path.resolve(filePath);
-        const fileBuffer = fs.readFileSync(fullPath);
-        const fileName = path.basename(filePath);
-
-        const formData = new FormData();
-        // SvelteKit's fetch handles FormData with Blobs correctly in Node 20+
-        formData.append('file', new Blob([fileBuffer]), fileName);
-        formData.append('purpose', 'voice_clone');
-
-        const resp = await fetch(UPLOAD_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${MINIMAX_API_KEY}`
-            },
-            body: formData
-        });
-
-        const data = await resp.json();
-        if (!resp.ok) {
-            log(`Upload API Error: ${JSON.stringify(data)}`);
-            return null;
-        }
-        return data.file?.file_id || null;
-    } catch (e: any) {
-        log(`Upload Network Error: ${e.message}`);
-        return null;
-    }
-}
-
-async function generateVoice(fileId: string, voiceId: string, text: string, log: Function): Promise<Buffer | null> {
-    try {
-        const resp = await fetch(CLONE_URL, {
+        log(`Calling MiniMax T2S for voice ${voiceId}...`);
+        const resp = await fetch(T2S_URL, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${MINIMAX_API_KEY}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                file_id: fileId,
-                voice_id: voiceId,
+                model: "speech-01-hd", // Version 2 standard HD model
                 text: text,
-                model: "speech-2.6-hd"
+                stream: false,
+                voice_setting: {
+                    voice_id: voiceId,
+                    speed: 1.0,
+                    vol: 1.0,
+                    pitch: 0
+                },
+                audio_setting: {
+                    sample_rate: 32000,
+                    bitrate: 128000,
+                    format: "mp3"
+                }
             })
         });
 
-        const data = await resp.json();
+        const contentType = resp.headers.get('content-type') || '';
+        
+        // Handle binary audio response (standard for T2S API)
+        if (resp.ok && contentType.includes('audio')) {
+            log(`Success: Received binary audio for ${voiceId}`);
+            const ab = await resp.arrayBuffer();
+            return Buffer.from(ab);
+        }
+
+        const data = await resp.json().catch(() => ({}));
         
         if (!resp.ok) {
-            log(`TTS API Error for ${voiceId}: ${JSON.stringify(data.base_resp || data)}`);
+            log(`T2S API Error (${resp.status}) for ${voiceId}: ${JSON.stringify(data.base_resp || data)}`);
             return null;
         }
 
-        const findUrl = (obj: any): string | null => {
-            if (typeof obj === 'string' && obj.startsWith('http')) return obj;
-            if (typeof obj === 'object' && obj !== null) {
-                for (const key in obj) {
-                    const res = findUrl(obj[key]);
-                    if (res) return res;
-                }
-            }
-            return null;
-        };
+        // T2S V2 sometimes returns a JSON with an audio URL or base64? 
+        // Based on typical T2S V2 implementation, it's a binary stream.
+        // If we got here, it's not binary and might be an error or unexpected JSON.
+        log(`Unexpected T2S response for ${voiceId}: ${JSON.stringify(data)}`);
+        return null;
 
-        const audioUrl = findUrl(data);
-        if (audioUrl) {
-            const audioResp = await fetch(audioUrl);
-            const ab = await audioResp.arrayBuffer();
-            return Buffer.from(ab);
-        } else {
-            log(`No audio URL found in TTS response for ${voiceId}`);
-            return null;
-        }
     } catch (e: any) {
-        log(`TTS Network Error for ${voiceId}: ${e.message}`);
+        log(`T2S Network Error for ${voiceId}: ${e.message}`);
         return null;
     }
 }
