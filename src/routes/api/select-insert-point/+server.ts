@@ -71,6 +71,7 @@ B、用户的输入：${userQuery}（当前时刻：${currentTimestamp.toFixed(1
                         content: insertPrompt
                     }
                 ],
+                temperature: 0.1,
                 stream: false
             })
         });

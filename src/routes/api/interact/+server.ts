@@ -58,6 +58,7 @@ export const POST: RequestHandler = async ({ request }) => {
                             content: userQuery
                         }
                     ],
+                    temperature: 0.1,
                     stream: false
                 })
             });
