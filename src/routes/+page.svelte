@@ -28,22 +28,17 @@
             if ($blocks.length === 0) {
                 const d = mainAudio.duration;
                 if (isFinite(d)) {
-                    // Create blocks based on transcript lines
-                    const initialBlocks: TimelineBlock[] = lines.map((line, i) => {
-                        const nextLine = lines[i + 1];
-                        const blockDuration = nextLine ? nextLine.seconds - line.seconds : d - line.seconds;
-                        return {
-                            id: `line-${i}`,
-                            type: 'original' as const,
-                            globalStart: line.seconds, // Initially same as source
-                            duration: blockDuration,
-                            sourceStart: line.seconds,
-                            audioUrl: 'main',
-                            color: 'bg-emerald-500'
-                        };
-                    });
-                    blocks.set(initialBlocks);
-                    duration.set(d); // Set duration directly, don't recalc
+                    // Create ONE block for the entire original audio
+                    blocks.set([{
+                        id: 'main-audio',
+                        type: 'original' as const,
+                        globalStart: 0,
+                        duration: d,
+                        sourceStart: 0,
+                        audioUrl: 'main',
+                        color: 'bg-emerald-500'
+                    }]);
+                    duration.set(d);
                 }
             }
         };
@@ -255,24 +250,55 @@
                color: 'bg-indigo-500'
            };
 
-           // Find insertion index (insert after the block that ends at insertAt)
+           // Split the block at insertAt and insert AI
            blocks.update(currentBlocks => {
-               const insertIdx = currentBlocks.findIndex(b => insertAt >= b.globalStart && insertAt < b.globalStart + b.duration);
+               const targetIdx = currentBlocks.findIndex(b => 
+                   insertAt >= b.globalStart && insertAt < b.globalStart + b.duration
+               );
                
-               if (insertIdx === -1) {
+               if (targetIdx === -1) {
                    // Insert at end
                    return [...currentBlocks, aiBlock];
                }
                
-               // Insert after the current block
-               const res = [...currentBlocks];
-               res.splice(insertIdx + 1, 0, aiBlock);
-               return res;
+               const target = currentBlocks[targetIdx];
+               
+               // Only split if it's an original block
+               if (target.type === 'original') {
+                   const offset = insertAt - target.globalStart;
+                   
+                   const pre: TimelineBlock = {
+                       ...target,
+                       id: target.id + '-pre',
+                       duration: offset
+                   };
+                   
+                   const post: TimelineBlock = {
+                       ...target,
+                       id: target.id + '-post',
+                       sourceStart: target.sourceStart + offset,
+                       duration: target.duration - offset
+                   };
+                   
+                   const newBlocks = [...currentBlocks];
+                   const replacement = [];
+                   if (pre.duration > 0.05) replacement.push(pre);
+                   replacement.push(aiBlock);
+                   if (post.duration > 0.05) replacement.push(post);
+                   
+                   newBlocks.splice(targetIdx, 1, ...replacement);
+                   return newBlocks;
+               } else {
+                   // AI block, insert after it
+                   const newBlocks = [...currentBlocks];
+                   newBlocks.splice(targetIdx + 1, 0, aiBlock);
+                   return newBlocks;
+               }
            });
            
            recalcGlobals();
            
-           // Update Transcript
+           // Update Transcript: shift all lines after insertAt
            const newLines = response.transcript.map((l: any) => ({
                ...l,
                seconds: insertAt + (l.relativeStart || 0),
