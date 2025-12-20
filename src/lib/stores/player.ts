@@ -42,10 +42,20 @@ export const progress = derived(
 export const activeLineIndex = derived(
     [virtualTime, transcript],
     ([$virtualTime, $transcript]) => {
-        return $transcript.findIndex((line, i) => {
+        const idx = $transcript.findIndex((line, i) => {
             const nextLine = $transcript[i + 1];
             return $virtualTime >= line.seconds && (!nextLine || $virtualTime < nextLine.seconds);
         });
+        
+        // Debug logging
+        if (idx !== -1 && $transcript[idx]) {
+            const line = $transcript[idx];
+            console.log(`[HIGHLIGHT] vTime=${$virtualTime.toFixed(2)}s -> Line ${idx}: "${line.speaker}: ${line.content.substring(0, 20)}..." @ ${line.seconds.toFixed(2)}s`);
+        } else {
+            console.log(`[HIGHLIGHT] vTime=${$virtualTime.toFixed(2)}s -> NO MATCH (idx=${idx})`);
+        }
+        
+        return idx;
     }
 );
 
