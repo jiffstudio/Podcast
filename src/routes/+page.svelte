@@ -28,6 +28,14 @@
   let isThinking = false;
   let showInput = false;
   
+  // Debug Logs for UI
+  let frontendDebugLogs: string[] = [];
+  function addLog(msg: string) {
+      const time = new Date().toLocaleTimeString();
+      frontendDebugLogs = [...frontendDebugLogs.slice(-19), `[${time}] ${msg}`];
+      console.log(`[Frontend] ${msg}`);
+  }
+  
   // Data State
   let segments: PodcastSegment[] = [
       {
@@ -85,42 +93,39 @@
 
     if (aiAudio) {
         aiAudio.onloadedmetadata = () => {
-            // 当 AI 音频真实长度加载出来后，更新段落长度并重排时间轴
             const actualDuration = aiAudio.duration;
+            addLog(`AI Audio Metadata loaded: ${actualDuration.toFixed(2)}s`);
+            
             const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
             if (aiSegIndex !== -1) {
-                const oldDuration = segments[aiSegIndex].duration;
-                segments[aiSegIndex].duration = actualDuration;
-                
-                // 获取服务器传回的比例，更新字幕时间
+                const seg = segments[aiSegIndex];
+                const oldDuration = seg.duration;
                 const diff = actualDuration - oldDuration;
                 
-                // 重新计算受影响的字幕时间
+                if (Math.abs(diff) < 0.01) return; // Ignore tiny changes
+
+                addLog(`Adjusting AI segment duration: ${oldDuration.toFixed(2)} -> ${actualDuration.toFixed(2)} (diff: ${diff.toFixed(2)})`);
+                
+                segments[aiSegIndex].duration = actualDuration;
                 recalculateGlobalTimeline();
                 const globalStart = segments[aiSegIndex].globalStart;
                 
-                // 这里我们要找到这一段 AI 插入对应的两条字幕并更新它们
-                // 简单的做法是找到所有 type === 'generated' 且在当前段落范围内的字幕
+                // Update lines within and after this segment
                 transcript = transcript.map(line => {
-                    if (line.type === 'generated' && line.seconds >= globalStart - 1 && line.seconds <= globalStart + oldDuration + 1) {
-                        // 重新根据比例分配
-                        const isTim = line.speaker.includes("Tim");
-                        if (isTim) {
-                            // Tim 的时间 = 起点 + 罗永浩的部分
-                            // 我们在 API 返回中存了比例在 line 对象里（临时）
-                            return { ...line, seconds: globalStart + (actualDuration * (line.relativeSeconds || 0)) };
-                        } else {
-                            return { ...line, seconds: globalStart };
-                        }
+                    // 1. Lines inside this AI segment: reposition based on new duration and ratio
+                    if (line.type === 'generated' && line.seconds >= globalStart - 0.1 && line.seconds <= globalStart + oldDuration + 0.1) {
+                        const newPos = globalStart + (actualDuration * (line.relativeSeconds || 0));
+                        return { ...line, seconds: newPos };
                     }
-                    // 修正后续所有字幕的偏移
-                    if (line.seconds > globalStart + oldDuration + 0.5) {
+                    // 2. Lines after this segment: shift by the difference
+                    if (line.seconds > globalStart + oldDuration - 0.1) {
                         return { ...line, seconds: line.seconds + diff };
                     }
                     return line;
                 });
                 
-                segments = segments;
+                segments = [...segments];
+                addLog("Timeline recalibration complete.");
             }
         };
 
@@ -129,6 +134,10 @@
                 updateGlobalTimeFromAi();
                 checkSegmentTransition();
             }
+        };
+
+        aiAudio.onerror = (e) => {
+            addLog(`AI Audio Error: ${aiAudio.error?.message || 'Unknown error'}`);
         };
     }
   });
@@ -143,19 +152,15 @@
   }
 
   function updateGlobalTimeFromMain() {
-      // Find which segment corresponds to mainAudio.currentTime
-      // Since 'main' segments are parts of the same file, we need to map file time to segment
-      
       const currentFileTime = mainAudio.currentTime;
-      // Find the first original segment where the file time falls within its range
       const activeSegment = segments.find(s => 
           s.type === 'original' && 
-          currentFileTime >= s.start && 
-          currentFileTime <= s.start + s.duration + 0.5 // Add some buffer for overshooting
+          currentFileTime >= s.start - 0.01 && 
+          currentFileTime <= s.start + s.duration + 0.01
       );
 
       if (activeSegment) {
-          const offsetInSegment = Math.min(currentFileTime - activeSegment.start, activeSegment.duration);
+          const offsetInSegment = Math.max(0, Math.min(currentFileTime - activeSegment.start, activeSegment.duration));
           currentTime = activeSegment.globalStart + offsetInSegment;
       }
   }
@@ -163,12 +168,13 @@
   function updateGlobalTimeFromAi() {
        const activeSegment = segments.find(s => 
           s.type === 'generated' && 
-          currentTime >= s.globalStart && 
-          currentTime <= s.globalStart + s.duration + 0.5
+          currentTime >= s.globalStart - 0.01 && 
+          currentTime <= s.globalStart + s.duration + 0.01
       );
       
       if (activeSegment) {
-          currentTime = activeSegment.globalStart + Math.min(aiAudio.currentTime, activeSegment.duration);
+          const offsetInSegment = Math.max(0, Math.min(aiAudio.currentTime, activeSegment.duration));
+          currentTime = activeSegment.globalStart + offsetInSegment;
       }
   }
 
@@ -227,6 +233,7 @@
       
       isThinking = true;
       showInput = false; 
+      addLog(`Asking AI: "${userQuery}"`);
       
       try {
           const response = await handleUserQuery({
@@ -234,7 +241,8 @@
               userQuery: userQuery
           });
 
-          const insertionPointGlobal = response.insertionPoint; // Global time where we want to insert
+          addLog(`AI Response received. Inserting at ${currentTime.toFixed(2)}s`);
+          const insertionPointGlobal = response.insertionPoint;
           
           // 1. Find which segment needs to be split
           const splitIndex = segments.findIndex(s => 
@@ -243,35 +251,35 @@
           );
           
           if (splitIndex === -1) {
-              console.error("Insertion point out of bounds");
+              addLog("Error: Insertion point out of bounds");
               return;
           }
           
           const segmentToSplit = segments[splitIndex];
+          addLog(`Splitting segment ${splitIndex} (${segmentToSplit.type})`);
           
           if (segmentToSplit.type !== 'original') {
-              console.warn("Inserting into AI segment not fully supported logic-wise yet, appending after.");
-              // Simplification: Don't split AI segments for now
+              addLog("Warning: Cannot split AI segment. Appending after.");
               return;
           }
           
-          // Calculate split point in LOCAL file time
           const splitOffset = insertionPointGlobal - segmentToSplit.globalStart;
           const fileSplitPoint = segmentToSplit.start + splitOffset;
           
-          // Create 3 segments from 1
+          const aiDuration = response.generatedDuration || 5; 
+
           const partA: PodcastSegment = {
               ...segmentToSplit,
               id: segmentToSplit.id + '-A',
-              duration: splitOffset // New duration is just the offset
+              duration: splitOffset
           };
           
           const aiSegment: PodcastSegment = {
               id: `ai-${Date.now()}`,
               type: 'generated',
               start: 0, 
-              duration: response.generatedDuration,
-              globalStart: 0, // Will recalc
+              duration: aiDuration,
+              globalStart: 0,
               color: 'bg-indigo-500',
               audioUrl: response.generatedAudioUrl
           };
@@ -279,11 +287,10 @@
           const partB: PodcastSegment = {
               ...segmentToSplit,
               id: segmentToSplit.id + '-B',
-              start: fileSplitPoint, // Start where A ended
+              start: fileSplitPoint,
               duration: segmentToSplit.duration - splitOffset
           };
           
-          // Replace segment at splitIndex with [partA, aiSegment, partB]
           segments = [
               ...segments.slice(0, splitIndex),
               partA,
@@ -293,21 +300,24 @@
           ];
           
           recalculateGlobalTimeline();
-          segments = segments; // Trigger reactivity update after mutation
+          segments = [...segments];
           
-          // Insert new lines
-          const aiDuration = response.generatedDuration || 5; // 初始占位时长
+          // 2. Shift existing transcript lines and insert new ones
+          addLog(`Shifting transcript lines after ${insertionPointGlobal.toFixed(2)}s by ${aiDuration.toFixed(2)}s`);
           
-          // Insert new lines with relative positions
+          transcript = transcript.map(line => {
+              if (line.seconds > insertionPointGlobal) {
+                  return { ...line, seconds: line.seconds + aiDuration };
+              }
+              return line;
+          });
+
           const newLines = response.transcript.map(l => ({
               ...l,
-              relativeSeconds: l.relativeSeconds, // 保存比例
+              relativeSeconds: l.relativeSeconds,
               seconds: insertionPointGlobal + (aiDuration * (l.relativeSeconds || 0))
           }));
           
-          // Find index to insert in transcript array
-          // We need to find the first line that is AFTER our insertion point (which is now shifted)
-          // The insertion point for lines is exactly at insertionPointGlobal
           const insertLineIndex = transcript.findIndex(t => t.seconds > insertionPointGlobal);
           
           if (insertLineIndex === -1) {
@@ -319,18 +329,16 @@
                   ...transcript.slice(insertLineIndex)
               ];
           }
+          
+          addLog("Transcript updated. Preloading AI audio...");
+          aiAudio.src = response.generatedAudioUrl;
+          aiAudio.load();
 
           userQuery = "";
           
       } catch (e: any) {
-          console.error(e);
-          // Try to get detailed logs from the error if available
-          let detailedMsg = e.message;
-          try {
-              // The API returns { error, debugLogs }
-              // If it's a fetch error, we might need to parse the response
-          } catch(err) {}
-          alert("Interaction failed: " + detailedMsg); 
+          addLog(`Error in handleAskQuestion: ${e.message}`);
+          alert("Interaction failed: " + e.message); 
       } finally {
           isThinking = false;
       }
@@ -356,7 +364,7 @@
   };
   
   const seek = (seconds: number) => {
-      // Find which segment this global time belongs to
+      addLog(`Seeking to ${seconds.toFixed(2)}s`);
       const targetTime = Math.max(0, Math.min(duration, seconds));
       
       const segmentIndex = segments.findIndex(s => 
@@ -367,8 +375,11 @@
       if (segmentIndex !== -1) {
           const segment = segments[segmentIndex];
           const offset = targetTime - segment.globalStart;
+          addLog(`Target found in segment ${segmentIndex} (${segment.type}). Local offset: ${offset.toFixed(2)}s`);
           playSegment(segmentIndex, offset);
           currentTime = targetTime;
+      } else {
+          addLog(`Error: Could not find segment for time ${targetTime.toFixed(2)}s`);
       }
   };
 
@@ -396,7 +407,7 @@
 <div class="flex flex-col h-screen bg-[#1a2e1a] text-[#e0f0e0] font-sans overflow-hidden selection:bg-[#4ade80] selection:text-[#1a2e1a]">
   
   <audio bind:this={mainAudio} src="/podcast.mp3" preload="metadata"></audio>
-  <audio bind:this={aiAudio} src="/mock_ai_response.mp3" preload="auto"></audio>
+  <audio bind:this={aiAudio} src="" preload="auto"></audio>
 
   <!-- Main Content Area -->
   <div class="flex-1 flex overflow-hidden relative">
@@ -427,6 +438,20 @@
     <!-- Right Panel: Transcript -->
     <div bind:this={transcriptContainer} class="flex-1 overflow-y-auto p-8 md:p-16 scroll-smooth relative">
       <div class="max-w-3xl mx-auto space-y-8 py-10 pb-40">
+        
+        <!-- Frontend Debug Panel -->
+        {#if frontendDebugLogs.length > 0}
+            <div class="bg-black/40 rounded-lg p-4 mb-8 font-mono text-xs border border-white/10 max-h-40 overflow-y-auto">
+                <div class="flex justify-between items-center mb-2 text-white/40 border-b border-white/5 pb-1">
+                    <span>DEBUG CONSOLE</span>
+                    <button on:click={() => frontendDebugLogs = []} class="hover:text-white transition">Clear</button>
+                </div>
+                {#each frontendDebugLogs as logLine}
+                    <div class="py-0.5"><span class="text-emerald-500/60 mr-2 opacity-50">›</span>{logLine}</div>
+                {/each}
+            </div>
+        {/if}
+
         {#each transcript as line, i}
           <div id="line-{i}" 
                class="transition-all duration-300 cursor-pointer group"
