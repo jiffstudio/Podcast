@@ -310,7 +310,11 @@
       };
       
       node.onended = () => {
-          console.log(`[bindAiAudio] ${id} ended`);
+          console.log(`[bindAiAudio] ${id} ended, activeAudioId=${activeAudioId}`);
+          if (activeAudioId !== id) {
+              console.log(`[bindAiAudio] Ignoring ended event for ${id} (not active)`);
+              return;
+          }
           transitionToNext();
       };
       
