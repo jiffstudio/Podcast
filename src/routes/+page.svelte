@@ -129,40 +129,38 @@
       
       // Safety: If no segments, can't do anything
       if (segs.length === 0) {
-          if (playing && mainAudio) {
-              // Try to play main audio directly
-              if (mainAudio.paused) mainAudio.play().catch(() => {});
-          }
-          return;
-      }
-      
-      const jumped = Math.abs(vTime - lastVirtualTime) > 0.5;
-      lastVirtualTime = vTime;
-      
-      // Check if we need to switch segment
-      const shouldBe = findSegmentAt(vTime);
-      const segmentChanged = !currentSegment || (shouldBe && shouldBe.id !== currentSegment.id);
-      
-      if (jumped || !currentSegment || segmentChanged) {
-          syncAudioToVirtualTime(vTime, true);
-      }
-      
-      // Sync play/pause
-      if (playing) {
-          if (activeAudioId === 'main' && mainAudio?.paused) {
+          if (playing && mainAudio && mainAudio.paused) {
               mainAudio.play().catch(() => {});
-          } else if (activeAudioId !== 'main') {
-              const aiAudio = aiAudios[activeAudioId];
-              if (aiAudio?.paused) aiAudio.play().catch(() => {});
           }
       } else {
-          if (mainAudio) mainAudio.pause();
-          Object.values(aiAudios).forEach(a => { if (a) a.pause(); });
+          const jumped = Math.abs(vTime - lastVirtualTime) > 0.5;
+          lastVirtualTime = vTime;
+          
+          // Check if we need to switch segment
+          const shouldBe = findSegmentAt(vTime);
+          const segmentChanged = !currentSegment || (shouldBe && shouldBe.id !== currentSegment.id);
+          
+          if (jumped || !currentSegment || segmentChanged) {
+              syncAudioToVirtualTime(vTime, true);
+          }
+          
+          // Sync play/pause
+          if (playing) {
+              if (activeAudioId === 'main' && mainAudio?.paused) {
+                  mainAudio.play().catch(() => {});
+              } else if (activeAudioId !== 'main') {
+                  const aiAudio = aiAudios[activeAudioId];
+                  if (aiAudio?.paused) aiAudio.play().catch(() => {});
+              }
+          } else {
+              if (mainAudio) mainAudio.pause();
+              Object.values(aiAudios).forEach(a => { if (a) a.pause(); });
+          }
+          
+          // Sync speed
+          if (mainAudio) mainAudio.playbackRate = speed;
+          Object.values(aiAudios).forEach(a => { if (a) a.playbackRate = speed; });
       }
-      
-      // Sync speed
-      if (mainAudio) mainAudio.playbackRate = speed;
-      Object.values(aiAudios).forEach(a => { if (a) a.playbackRate = speed; });
   }
 
   // --- Handle AI Insertion ---
