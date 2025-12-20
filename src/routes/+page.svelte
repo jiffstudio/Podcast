@@ -192,9 +192,10 @@
       const idx = blks.findIndex(b => time >= b.globalStart && time < b.globalStart + b.duration);
       
       if (idx !== -1 && idx < blks.length - 1) {
-          console.log("[Transition] Next Block");
+          const next = blks[idx + 1];
+          console.log(`[Transition] From ${blks[idx].id} to ${next.id} (${next.globalStart.toFixed(2)}s)`);
           // Just jump to next block start
-          currentTime.set(blks[idx + 1].globalStart);
+          currentTime.set(next.globalStart);
           // Reactivity will handle syncRealPlayer
       } else {
           console.log("[Transition] End");
@@ -297,6 +298,8 @@
            });
            
            recalcGlobals();
+           
+           console.log('[Blocks After Insert]', $blocks.map(b => `${b.id}(${b.type}): ${b.globalStart.toFixed(2)}-${(b.globalStart + b.duration).toFixed(2)}s`));
            
            // Update Transcript: shift all lines after insertAt
            const newLines = response.transcript.map((l: any) => ({
