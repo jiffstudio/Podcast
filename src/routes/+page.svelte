@@ -103,6 +103,7 @@
             const actualDuration = aiAudio.duration;
             addLog(`AI Audio Metadata loaded: ${actualDuration.toFixed(2)}s`);
             
+            // Find which segment corresponds to this audio
             const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
             if (aiSegIndex !== -1) {
                 const seg = segments[aiSegIndex];
@@ -277,10 +278,8 @@
           let safeInsertionPoint = currentTime + 0.1; // Default fallback
           
           // Try to find the end of the current sentence (start of next line)
-          // We search in the *global* transcript
           const currentLineIndex = transcript.findIndex((line, i) => {
               const nextLine = transcript[i + 1];
-              // Handle boundaries safely
               const endOfLine = nextLine ? nextLine.seconds : Infinity;
               return currentTime >= line.seconds && currentTime < endOfLine;
           });
@@ -288,12 +287,9 @@
           if (currentLineIndex !== -1) {
               const nextLine = transcript[currentLineIndex + 1];
               if (nextLine) {
-                  // Found a next line, so we insert right before it starts
-                  // This preserves the current line fully
                   safeInsertionPoint = nextLine.seconds;
                   addLog(`Aligning insertion to sentence boundary: ${safeInsertionPoint.toFixed(2)}s`);
               } else {
-                  // Last line. Insert at end of current segment if possible.
                   const activeSeg = segments[activeSegmentIndex];
                   if (activeSeg) {
                       safeInsertionPoint = activeSeg.globalStart + activeSeg.duration;
@@ -302,7 +298,6 @@
           }
           // --- Smart Insertion Logic End ---
           
-          // Find segment to split
           const splitIndex = segments.findIndex(s => 
               safeInsertionPoint >= s.globalStart && 
               safeInsertionPoint < s.globalStart + s.duration
@@ -356,9 +351,6 @@
               ...segments.slice(splitIndex + 1)
           ];
           
-          // Active segment logic: we are still in partA (splitIndex)
-          activeSegmentIndex = splitIndex;
-          
           recalculateGlobalTimeline();
           segments = [...segments];
           
@@ -372,9 +364,7 @@
 
           // Insert new lines
           const newLines = response.transcript.map(l => {
-              // l.relativeStart is seconds relative to AI start
-              // Calculate ratio for future calibration
-              const ratio = (l.relativeStart || 0) / aiDuration;
+              const ratio = (l.relativeStart || 0) / (response.generatedDuration || 5);
               return {
                   ...l,
                   relativeRatio: ratio,
@@ -396,7 +386,25 @@
           // Preload
           aiAudio.src = response.generatedAudioUrl;
           aiAudio.load();
+          segments[splitIndex + 1].duration = response.generatedDuration;
+          recalculateGlobalTimeline();
+          segments = [...segments];
 
+          // --- CRITICAL FIX: Force sync state after insertion ---
+          // Since we are inserting at a future point (safeInsertionPoint),
+          // we are currently playing 'partA' (segments[splitIndex]).
+          // We need to ensure activeSegmentIndex points to partA correctly.
+          // splitIndex IS the index of partA in the new array.
+          
+          activeSegmentIndex = splitIndex;
+          
+          // But wait, if safeInsertionPoint is effectively NOW (very close),
+          // we might want to ensure we don't skip partA if it has tiny remaining duration.
+          // Let's explicitly tell the system we are in partA.
+          
+          // If we are currently playing, checkSegmentTransition will handle the jump
+          // when partA finishes.
+          
           userQuery = "";
           
       } catch (e: any) {
