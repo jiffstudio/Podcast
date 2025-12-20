@@ -42,7 +42,7 @@ export const POST: RequestHandler = async ({ request }) => {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    model: "doubao-seed-1-8-251215", 
+                    model: "doubao-seed-1-6-251015", 
                     messages: [
                         {
                             role: "system",
