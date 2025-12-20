@@ -103,7 +103,6 @@
             const actualDuration = aiAudio.duration;
             addLog(`AI Audio Metadata loaded: ${actualDuration.toFixed(2)}s`);
             
-            // Find which segment corresponds to this audio
             const aiSegIndex = segments.findIndex(s => s.type === 'generated' && s.audioUrl === aiAudio.src);
             if (aiSegIndex !== -1) {
                 const seg = segments[aiSegIndex];
@@ -158,226 +157,6 @@
       duration = currentGlobal;
   }
 
-  // Update Global Time -> Syncs currentTime based on active segment's audio progress
-  function updateTime() {
-      const activeSeg = segments[activeSegmentIndex];
-      if (!activeSeg) return;
-
-      if (activeSeg.type === 'original') {
-          // Map main audio file time to segment relative time
-          const relativeTime = mainAudio.currentTime - activeSeg.start;
-          
-          // Only update if within reasonable bounds (prevent jumping when seeking)
-          if (relativeTime >= -0.5 && relativeTime <= activeSeg.duration + 0.5) {
-             const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
-             currentTime = activeSeg.globalStart + clampedRelative;
-          }
-      } else {
-          const relativeTime = aiAudio.currentTime;
-          const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
-          currentTime = activeSeg.globalStart + clampedRelative;
-      }
-  }
-
-  // Check Transition -> Handles moving to next segment when audio ends/reaches boundary
-  function checkSegmentTransition() {
-      const activeSeg = segments[activeSegmentIndex];
-      if (!activeSeg) return;
-
-      // We rely on the audio source's own time to detect end
-      // But we need to check bounds manually for 'original' segments since they are slices
-      
-      if (activeSeg.type === 'original') {
-          // Check if mainAudio passed the segment end
-          if (mainAudio.currentTime >= activeSeg.start + activeSeg.duration - 0.1) { // 0.1s tolerance
-               transitionToNext();
-          }
-      } else {
-          // For AI, we can check if it ended or is close to duration
-          if (aiAudio.ended || aiAudio.currentTime >= activeSeg.duration - 0.1) {
-              transitionToNext();
-          }
-      }
-  }
-
-  // index: target segment index
-  // offset: relative time from START of that segment
-  function playSegment(index: number, offset: number = 0) {
-      if (index < 0 || index >= segments.length) return;
-      
-      const prevSource = currentAudioSource;
-      activeSegmentIndex = index;
-      const segment = segments[index];
-      
-      addLog(`Playing segment ${index} (${segment.type}) at offset ${offset.toFixed(2)}`);
-
-      if (segment.type === 'original') {
-          currentAudioSource = 'main';
-          // Important: Only pause AI if we are switching sources
-          if (prevSource === 'ai') aiAudio.pause();
-          
-          // Seek main audio to: segment start time (in file) + requested offset
-          const targetFileTime = segment.start + offset;
-          
-          // Optimization: Don't seek if we are already close enough (avoid skipping)
-          // Unless it's an explicit seek (offset might change) - actually always seek for safety
-          if (Math.abs(mainAudio.currentTime - targetFileTime) > 0.1) {
-              mainAudio.currentTime = targetFileTime;
-          }
-          
-          if (isPlaying) {
-              mainAudio.play().catch(e => console.error("Play error:", e));
-          }
-      } else {
-          currentAudioSource = 'ai';
-          if (prevSource === 'main') mainAudio.pause();
-          
-          if (segment.audioUrl && aiAudio.src !== segment.audioUrl) {
-              aiAudio.src = segment.audioUrl;
-          }
-          
-          // For AI files, offset is just the time
-          if (Math.abs(aiAudio.currentTime - offset) > 0.1) {
-              aiAudio.currentTime = offset;
-          }
-          
-          if (isPlaying) {
-              aiAudio.play().catch(e => console.error("Play error:", e));
-          }
-      }
-  }
-
-  async function handleAskQuestion() {
-      if (!userQuery.trim()) return;
-      
-      isThinking = true;
-      showInput = false; 
-      
-      try {
-          const response = await handleUserQuery({
-              currentTimestamp: currentTime,
-              userQuery: userQuery
-          });
-
-          // Insert AFTER current playback time with a small buffer
-          // This ensures we don't insert "behind" the cursor
-          const safeInsertionPoint = currentTime + 0.1;
-          
-          // Find segment to split
-          // Since we use activeSegmentIndex, we basically just split the current one
-          // But strictly speaking we should look up by time
-          const splitIndex = segments.findIndex(s => 
-              safeInsertionPoint >= s.globalStart && 
-              safeInsertionPoint < s.globalStart + s.duration
-          );
-          
-          if (splitIndex === -1) {
-              // Should not happen if logic is correct, unless at very end
-              addLog("Insertion point at very end, appending.");
-              return; 
-          }
-          
-          const segmentToSplit = segments[splitIndex];
-          if (segmentToSplit.type !== 'original') {
-              addLog("Can't split AI segment yet.");
-              return;
-          }
-          
-          const splitOffset = safeInsertionPoint - segmentToSplit.globalStart;
-          const fileSplitPoint = segmentToSplit.start + splitOffset;
-          
-          const aiDuration = response.generatedDuration || 5; 
-
-          const partA: PodcastSegment = {
-              ...segmentToSplit,
-              id: segmentToSplit.id + '-A',
-              duration: splitOffset
-          };
-          
-          const aiSegment: PodcastSegment = {
-              id: `ai-${Date.now()}`,
-              type: 'generated',
-              start: 0, 
-              duration: aiDuration,
-              globalStart: 0,
-              color: 'bg-indigo-500',
-              audioUrl: response.generatedAudioUrl
-          };
-          
-          const partB: PodcastSegment = {
-              ...segmentToSplit,
-              id: segmentToSplit.id + '-B',
-              start: fileSplitPoint,
-              duration: segmentToSplit.duration - splitOffset
-          };
-          
-          // Update segments
-          segments = [
-              ...segments.slice(0, splitIndex),
-              partA,
-              aiSegment,
-              partB,
-              ...segments.slice(splitIndex + 1)
-          ];
-          
-          // Current active segment (partA) index is splitIndex
-          // We are still playing partA, so activeSegmentIndex remains splitIndex
-          // When partA ends, it will naturally transition to splitIndex + 1 (AI)
-          activeSegmentIndex = splitIndex;
-          
-          recalculateGlobalTimeline();
-          segments = [...segments];
-          
-          // Update Transcript
-          // Shift lines after insertion
-          transcript = transcript.map(line => {
-              if (line.seconds > safeInsertionPoint) {
-                  return { ...line, seconds: line.seconds + aiDuration };
-              }
-              return line;
-          });
-
-          // Insert new lines
-          const newLines = response.transcript.map(l => {
-              // l.relativeStart is seconds relative to AI start
-              // Calculate ratio for future calibration
-              const ratio = (l.relativeStart || 0) / aiDuration;
-              return {
-                  ...l,
-                  relativeRatio: ratio,
-                  seconds: safeInsertionPoint + (l.relativeStart || 0)
-              };
-          });
-          
-          const insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
-          if (insertLineIndex === -1) {
-              transcript = [...transcript, ...newLines];
-          } else {
-              transcript = [
-                  ...transcript.slice(0, insertLineIndex),
-                  ...newLines,
-                  ...transcript.slice(insertLineIndex)
-              ];
-          }
-          
-          // Preload
-          aiAudio.src = response.generatedAudioUrl;
-          aiAudio.load();
-          // Update segment immediately with generated duration (best guess)
-          // We will refine it when metadata loads
-          segments[splitIndex + 1].duration = response.generatedDuration;
-          recalculateGlobalTimeline();
-          segments = [...segments];
-
-          userQuery = "";
-          
-      } catch (e: any) {
-          alert("Error: " + e.message); 
-      } finally {
-          isThinking = false;
-      }
-  }
-
   // --- Core Logic: Segment-based Time Sync ---
   
   // Update Global Time -> Syncs currentTime based on active segment's audio progress
@@ -395,7 +174,6 @@
              currentTime = activeSeg.globalStart + clampedRelative;
           }
       } else {
-          // AI audio is a standalone file, so relativeTime IS currentTime
           const relativeTime = aiAudio.currentTime;
           const clampedRelative = Math.max(0, Math.min(relativeTime, activeSeg.duration));
           currentTime = activeSeg.globalStart + clampedRelative;
@@ -483,7 +261,124 @@
       }
   }
 
-  // Toggle Play/Pause Global
+  async function handleAskQuestion() {
+      if (!userQuery.trim()) return;
+      
+      isThinking = true;
+      showInput = false; 
+      
+      try {
+          const response = await handleUserQuery({
+              currentTimestamp: currentTime,
+              userQuery: userQuery
+          });
+
+          // Insert AFTER current playback time with a small buffer
+          const safeInsertionPoint = currentTime + 0.1;
+          
+          const splitIndex = segments.findIndex(s => 
+              safeInsertionPoint >= s.globalStart && 
+              safeInsertionPoint < s.globalStart + s.duration
+          );
+          
+          if (splitIndex === -1) {
+              addLog("Insertion point at very end, appending.");
+              return; 
+          }
+          
+          const segmentToSplit = segments[splitIndex];
+          if (segmentToSplit.type !== 'original') {
+              addLog("Can't split AI segment yet.");
+              return;
+          }
+          
+          const splitOffset = safeInsertionPoint - segmentToSplit.globalStart;
+          const fileSplitPoint = segmentToSplit.start + splitOffset;
+          
+          const aiDuration = response.generatedDuration || 5; 
+
+          const partA: PodcastSegment = {
+              ...segmentToSplit,
+              id: segmentToSplit.id + '-A',
+              duration: splitOffset
+          };
+          
+          const aiSegment: PodcastSegment = {
+              id: `ai-${Date.now()}`,
+              type: 'generated',
+              start: 0, 
+              duration: aiDuration,
+              globalStart: 0,
+              color: 'bg-indigo-500',
+              audioUrl: response.generatedAudioUrl
+          };
+          
+          const partB: PodcastSegment = {
+              ...segmentToSplit,
+              id: segmentToSplit.id + '-B',
+              start: fileSplitPoint,
+              duration: segmentToSplit.duration - splitOffset
+          };
+          
+          // Update segments
+          segments = [
+              ...segments.slice(0, splitIndex),
+              partA,
+              aiSegment,
+              partB,
+              ...segments.slice(splitIndex + 1)
+          ];
+          
+          // Active segment logic: we are still in partA (splitIndex)
+          activeSegmentIndex = splitIndex;
+          
+          recalculateGlobalTimeline();
+          segments = [...segments];
+          
+          // Update Transcript
+          transcript = transcript.map(line => {
+              if (line.seconds > safeInsertionPoint) {
+                  return { ...line, seconds: line.seconds + aiDuration };
+              }
+              return line;
+          });
+
+          // Insert new lines
+          const newLines = response.transcript.map(l => {
+              // l.relativeStart is seconds relative to AI start
+              // Calculate ratio for future calibration
+              const ratio = (l.relativeStart || 0) / aiDuration;
+              return {
+                  ...l,
+                  relativeRatio: ratio,
+                  seconds: safeInsertionPoint + (l.relativeStart || 0)
+              };
+          });
+          
+          const insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
+          if (insertLineIndex === -1) {
+              transcript = [...transcript, ...newLines];
+          } else {
+              transcript = [
+                  ...transcript.slice(0, insertLineIndex),
+                  ...newLines,
+                  ...transcript.slice(insertLineIndex)
+              ];
+          }
+          
+          // Preload
+          aiAudio.src = response.generatedAudioUrl;
+          aiAudio.load();
+
+          userQuery = "";
+          
+      } catch (e: any) {
+          alert("Error: " + e.message); 
+      } finally {
+          isThinking = false;
+      }
+  }
+
   const togglePlay = () => {
     if (currentAudioSource === 'main') {
         if (isPlaying) mainAudio.pause();
