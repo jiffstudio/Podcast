@@ -275,9 +275,20 @@
           });
 
           // --- Smart Insertion Logic Start ---
-          let safeInsertionPoint = currentTime + 0.1; // Default fallback
+          let safeInsertionPoint = currentTime + 0.1; 
           
-          // Try to find the end of the current sentence (start of next line)
+          // 1. Find the active segment index based on currentTime
+          // We trust activeSegmentIndex usually, but let's double check with currentTime
+          // to be sure we are splitting the correct logical segment.
+          let targetSegmentIndex = segments.findIndex(s => 
+              currentTime >= s.globalStart && currentTime < s.globalStart + s.duration
+          );
+          
+          if (targetSegmentIndex === -1) targetSegmentIndex = activeSegmentIndex;
+          
+          const currentSeg = segments[targetSegmentIndex];
+
+          // 2. Find sentence boundary within this segment
           const currentLineIndex = transcript.findIndex((line, i) => {
               const nextLine = transcript[i + 1];
               const endOfLine = nextLine ? nextLine.seconds : Infinity;
@@ -287,44 +298,52 @@
           if (currentLineIndex !== -1) {
               const nextLine = transcript[currentLineIndex + 1];
               if (nextLine) {
-                  safeInsertionPoint = nextLine.seconds;
-                  addLog(`Aligning insertion to sentence boundary: ${safeInsertionPoint.toFixed(2)}s`);
-              } else {
-                  const activeSeg = segments[activeSegmentIndex];
-                  if (activeSeg) {
-                      safeInsertionPoint = activeSeg.globalStart + activeSeg.duration;
+                  // The ideal insertion point is the start of the next line
+                  let proposedPoint = nextLine.seconds;
+                  
+                  // Constraint: The proposed point MUST NOT be too far ahead (e.g., skipping whole segments)
+                  // It should be within the current segment OR exactly at its end.
+                  const segmentEnd = currentSeg.globalStart + currentSeg.duration;
+                  
+                  if (proposedPoint > segmentEnd + 0.05) {
+                      // If the sentence ends in a future segment, we should probably just 
+                      // append to the END of the current segment to be safe and simple.
+                      // Or, if we support cross-segment sentence detection, we'd need more complex logic.
+                      // For now, clamp to segment end.
+                      addLog(`Sentence ends in future segment. Clamping to end of current segment.`);
+                      safeInsertionPoint = segmentEnd;
+                  } else {
+                      safeInsertionPoint = proposedPoint;
+                      addLog(`Aligning insertion to sentence boundary: ${safeInsertionPoint.toFixed(2)}s`);
                   }
+              } else {
+                  // No next line, append to end of segment
+                  safeInsertionPoint = currentSeg.globalStart + currentSeg.duration;
               }
-          }
-          // --- Smart Insertion Logic End ---
-          
-          const splitIndex = segments.findIndex(s => 
-              safeInsertionPoint >= s.globalStart && 
-              safeInsertionPoint < s.globalStart + s.duration
-          );
-          
-          if (splitIndex === -1) {
-              addLog("Insertion point at very end, appending.");
-              return; 
+          } else {
+               // Fallback if no line found
+               safeInsertionPoint = currentTime + 0.1;
           }
           
-          const segmentToSplit = segments[splitIndex];
-          if (segmentToSplit.type !== 'original') {
-              addLog("Can't split AI segment yet.");
+          // 3. Determine Split Logic
+          // We are splitting 'currentSeg' at 'safeInsertionPoint'.
+          
+          // Re-verify the index in case safeInsertionPoint is exactly at start of next one
+          // Actually, we want to operate on 'targetSegmentIndex' specifically.
+          
+          if (currentSeg.type !== 'original') {
+              addLog("Cannot insert into non-original segment.");
               return;
           }
           
-          const splitOffset = safeInsertionPoint - segmentToSplit.globalStart;
-          const fileSplitPoint = segmentToSplit.start + splitOffset;
+          const splitOffset = safeInsertionPoint - currentSeg.globalStart;
+          
+          // Handle Edge Case: Insertion is at the very end of the segment
+          const isAtEnd = Math.abs(splitOffset - currentSeg.duration) < 0.1;
+          const isAtStart = splitOffset < 0.1;
           
           const aiDuration = response.generatedDuration || 5; 
 
-          const partA: PodcastSegment = {
-              ...segmentToSplit,
-              id: segmentToSplit.id + '-A',
-              duration: splitOffset
-          };
-          
           const aiSegment: PodcastSegment = {
               id: `ai-${Date.now()}`,
               type: 'generated',
@@ -334,29 +353,67 @@
               color: 'bg-indigo-500',
               audioUrl: response.generatedAudioUrl
           };
-          
-          const partB: PodcastSegment = {
-              ...segmentToSplit,
-              id: segmentToSplit.id + '-B',
-              start: fileSplitPoint,
-              duration: segmentToSplit.duration - splitOffset
-          };
-          
-          // Update segments
-          segments = [
-              ...segments.slice(0, splitIndex),
-              partA,
-              aiSegment,
-              partB,
-              ...segments.slice(splitIndex + 1)
-          ];
-          
+
+          let newSegments = [];
+          let nextActiveIndex = targetSegmentIndex; // Which segment index to play next?
+
+          if (isAtEnd) {
+               addLog("Inserting AFTER current segment");
+               // Just insert AI segment after this one
+               newSegments = [
+                   ...segments.slice(0, targetSegmentIndex + 1),
+                   aiSegment,
+                   ...segments.slice(targetSegmentIndex + 1)
+               ];
+               // We finished the current segment, so next we play the AI segment
+               nextActiveIndex = targetSegmentIndex + 1;
+               
+          } else if (isAtStart) {
+               addLog("Inserting BEFORE current segment");
+               // Insert AI segment before this one
+               newSegments = [
+                   ...segments.slice(0, targetSegmentIndex),
+                   aiSegment,
+                   ...segments.slice(targetSegmentIndex)
+               ];
+               // We want to play the AI segment immediately
+               nextActiveIndex = targetSegmentIndex; 
+               
+          } else {
+               addLog("Splitting current segment");
+               // Standard Split
+               const partA: PodcastSegment = {
+                  ...currentSeg,
+                  id: currentSeg.id + '-A',
+                  duration: splitOffset
+               };
+               
+               const partB: PodcastSegment = {
+                  ...currentSeg,
+                  id: currentSeg.id + '-B',
+                  start: currentSeg.start + splitOffset,
+                  duration: currentSeg.duration - splitOffset
+               };
+               
+               newSegments = [
+                   ...segments.slice(0, targetSegmentIndex),
+                   partA,
+                   aiSegment,
+                   partB,
+                   ...segments.slice(targetSegmentIndex + 1)
+               ];
+               // We continue playing partA (which is at targetSegmentIndex)
+               // The transition logic will handle moving to AI (index + 1) when partA ends
+               nextActiveIndex = targetSegmentIndex;
+          }
+
+          segments = newSegments;
           recalculateGlobalTimeline();
           segments = [...segments];
           
           // Update Transcript
           transcript = transcript.map(line => {
-              if (line.seconds > safeInsertionPoint) {
+              if (line.seconds >= safeInsertionPoint - 0.05) { // Tolerance
                   return { ...line, seconds: line.seconds + aiDuration };
               }
               return line;
@@ -372,7 +429,10 @@
               };
           });
           
-          const insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
+          // Find insertion index for transcript
+          // We want to insert strictly AFTER the line that ends before safeInsertionPoint
+          let insertLineIndex = transcript.findIndex(t => t.seconds > safeInsertionPoint);
+          
           if (insertLineIndex === -1) {
               transcript = [...transcript, ...newLines];
           } else {
@@ -383,36 +443,18 @@
               ];
           }
           
-          // Preload
+          // Preload and Update
           aiAudio.src = response.generatedAudioUrl;
           aiAudio.load();
-          segments[splitIndex + 1].duration = response.generatedDuration;
-          recalculateGlobalTimeline();
-          segments = [...segments];
-
-          // --- CRITICAL FIX: Force sync state after insertion ---
-          // Since we are inserting at a future point (safeInsertionPoint),
-          // we are currently playing 'partA' (segments[splitIndex]).
-          // We need to ensure activeSegmentIndex points to partA correctly.
-          // splitIndex IS the index of partA in the new array.
           
-          activeSegmentIndex = splitIndex;
+          // Force active index update
+          activeSegmentIndex = nextActiveIndex;
           
-          // But wait, if safeInsertionPoint is effectively NOW (very close),
-          // we might want to ensure we don't skip partA if it has tiny remaining duration.
-          // Let's explicitly tell the system we are in partA.
+          // If we inserted at the very end (isAtEnd), we are likely naturally transitioning.
+          // If we split (else), we are still in partA, so activeSegmentIndex is correct.
+          // BUT, we need to make sure the system acknowledges the new segment structure.
           
-          // If we are currently playing, checkSegmentTransition will handle the jump
-          // when partA finishes.
-          
-          userQuery = "";
-          
-      } catch (e: any) {
-          alert("Error: " + e.message); 
-      } finally {
-          isThinking = false;
-      }
-  }
+          addLog(`Insertion complete. New Active Index: ${activeSegmentIndex}. Total Segments: ${segments.length}`);
 
   const togglePlay = () => {
     if (currentAudioSource === 'main') {
