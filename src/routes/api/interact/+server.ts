@@ -92,25 +92,28 @@ export const POST: RequestHandler = async ({ request }) => {
         
         log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s, Total=${totalSeconds}s`);
 
+        // Return array of segments, each with its own audio and transcript
         return json({
-            generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
-            hostDuration: hostSeconds, 
-            timDuration: timSeconds,
-            generatedDuration: totalSeconds,
-            transcript: [
+            segments: [
                 {
-                    speaker: "罗永浩 (AI)",
-                    content: hostText,
-                    timestamp: "AI-Gen",
-                    relativeStart: 0, 
-                    type: 'generated'
+                    audioUrl: `data:audio/mp3;base64,${hostAudio.toString('base64')}`,
+                    duration: hostSeconds,
+                    transcript: {
+                        speaker: "罗永浩 (AI)",
+                        content: hostText,
+                        timestamp: "AI-Gen",
+                        type: 'generated'
+                    }
                 },
                 {
-                    speaker: "Tim (AI)",
-                    content: timText,
-                    timestamp: "AI-Gen",
-                    relativeStart: hostSeconds,
-                    type: 'generated'
+                    audioUrl: `data:audio/mp3;base64,${timAudio.toString('base64')}`,
+                    duration: timSeconds,
+                    transcript: {
+                        speaker: "Tim (AI)",
+                        content: timText,
+                        timestamp: "AI-Gen",
+                        type: 'generated'
+                    }
                 }
             ],
             debugLogs 

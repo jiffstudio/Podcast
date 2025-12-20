@@ -195,64 +195,72 @@
               userQuery: q
           });
           
-          const aiId = `ai-${Date.now()}`;
-          const aiDuration = response.generatedDuration;
+          console.log('[AI Response]', response.segments.length, 'segments');
           
-          // Store audio URL
-          aiAudioUrls[aiId] = response.generatedAudioUrl;
+          // Insert each segment sequentially
+          let currentInsertTime = insertAt;
+          const allTranscriptLines: any[] = [];
           
-          // Insert AI segment into timeline
-          insertAISegment(insertAt, aiId, aiDuration);
+          for (const segment of response.segments) {
+              const aiId = `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+              const aiDuration = segment.duration;
+              
+              // Store audio URL
+              aiAudioUrls[aiId] = segment.audioUrl;
+              
+              // Insert AI segment into timeline
+              insertAISegment(currentInsertTime, aiId, aiDuration);
+              
+              // Prepare transcript line
+              allTranscriptLines.push({
+                  ...segment.transcript,
+                  seconds: currentInsertTime,
+                  type: 'generated' as const
+              });
+              
+              currentInsertTime += aiDuration;
+          }
           
-          // Update transcript
-          const newLines = response.transcript.map((l: any) => ({
-              ...l,
-              seconds: insertAt + (l.relativeStart || 0),
-              type: 'generated' as const
-          }));
+          const totalAiDuration = currentInsertTime - insertAt;
           
-          console.log('[Transcript Insert]', newLines.map(l => `${l.speaker} at ${l.seconds.toFixed(2)}s`));
+          console.log('[AI Segments]', allTranscriptLines.map(l => `${l.speaker} at ${l.seconds.toFixed(2)}s`));
           
           transcript.update(ts => {
               // 1. Insert new AI lines at the correct position
               const insertIdx = ts.findIndex(t => t.seconds >= insertAt);
-              console.log(`[Transcript] Before insert:`, ts.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
-              console.log(`[Transcript] Inserting ${newLines.length} AI lines at index ${insertIdx}`);
-              console.log(`[Transcript] AI lines:`, newLines.map(l => `${l.speaker} @ ${l.seconds.toFixed(2)}s`));
+              console.log(`[Transcript] Insert ${allTranscriptLines.length} AI lines at index ${insertIdx}`);
               
               let result: typeof ts;
               if (insertIdx === -1) {
                   // Insert at end
-                  result = [...ts, ...newLines];
+                  result = [...ts, ...allTranscriptLines];
               } else {
                   // Insert before the line at insertIdx
                   result = [...ts];
-                  result.splice(insertIdx, 0, ...newLines);
+                  result.splice(insertIdx, 0, ...allTranscriptLines);
               }
-              
-              console.log(`[Transcript] After insert (before shift):`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
               
               // 2. Shift ORIGINAL lines that are >= insertAt
               result = result.map(l => {
                   // Don't shift the lines we just inserted
-                  if (l.type === 'generated' && newLines.some(nl => nl.speaker === l.speaker && Math.abs(nl.seconds - l.seconds) < 0.01)) {
+                  if (l.type === 'generated' && allTranscriptLines.some(nl => nl.speaker === l.speaker && Math.abs(nl.seconds - l.seconds) < 0.01)) {
                       return l;
                   }
                   // Shift original lines
                   if (l.type === 'original' && l.seconds >= insertAt) {
-                      const newSeconds = l.seconds + aiDuration;
+                      const newSeconds = l.seconds + totalAiDuration;
                       console.log(`[Transcript] Shifting: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)}`);
                       return { ...l, seconds: newSeconds };
                   }
                   return l;
               });
               
-              console.log(`[Transcript] After shift (before sort):`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              console.log(`[Transcript] After shift (before sort):`, result.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
               
               // 3. Sort by time to ensure correct order
               result = result.sort((a, b) => a.seconds - b.seconds);
               
-              console.log(`[Transcript] Final result:`, result.map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
+              console.log(`[Transcript] Final result:`, result.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
               
               return result;
           });
@@ -301,51 +309,9 @@
 
               totalDuration.update(d => d + diff);
               
-              // Update transcript:
-              // Track original positions before correction
-              // Lines that were originally > insertAt need to be shifted by diff
-              // But AI internal lines should be recalculated from relativeStart
-              const originalInsertAt = segStart; // This is where AI was inserted
-              
-              console.log(`[Duration Correction] segStart=${segStart.toFixed(2)}, oldSegEnd=${oldSegEnd.toFixed(2)}, newSegEnd=${newSegEnd.toFixed(2)}, diff=${diff.toFixed(2)}, expectedDuration=${expectedDuration.toFixed(2)}`);
-              
-              transcript.update(ts => {
-                  console.log('[Duration Correction] Before:', ts.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
-                  
-                  const updated = ts.map((l, idx) => {
-                      // If this is an AI line with relativeStart, recalculate from actual duration
-                      if (l.type === 'generated' && l.relativeStart !== undefined && l.seconds >= segStart - 0.1 && l.seconds <= oldSegEnd + 0.1) {
-                          const newSeconds = segStart + l.relativeStart;
-                          console.log(`[Duration Correction] AI internal ${idx}: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (relativeStart=${l.relativeStart.toFixed(2)})`);
-                          return { ...l, seconds: newSeconds };
-                      }
-                      // If this is an ORIGINAL line that was shifted during insertion
-                      // It should be shifted again by the duration correction
-                      // Original lines > originalInsertAt were shifted by expectedDuration
-                      // Now need to shift by diff to correct
-                      if (l.type === 'original') {
-                          // Calculate what this line's original position was (before AI insertion)
-                          const originalPos = l.seconds - expectedDuration;
-                          // If it was originally AFTER insertAt, it needs correction
-                          // Use > not >= to exclude the line exactly at insertAt
-                          if (originalPos > originalInsertAt + 0.1) {
-                              const newSeconds = l.seconds + diff;
-                              if (idx < 10) console.log(`[Duration Correction] Original ${idx}: ${l.speaker} ${l.seconds.toFixed(2)} -> ${newSeconds.toFixed(2)} (originalPos=${originalPos.toFixed(2)})`);
-                              return { ...l, seconds: newSeconds };
-                          }
-                      }
-                      return l;
-                  });
-                  
-                  console.log('[Duration Correction] After correction (before sort):', updated.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
-                  
-                  // Sort by seconds to maintain order
-                  const sorted = updated.sort((a, b) => a.seconds - b.seconds);
-                  
-                  console.log('[Duration Correction] After sort:', sorted.slice(0, 10).map((l, i) => `${i}: ${l.speaker} @ ${l.seconds.toFixed(2)}s (${l.type})`));
-                  
-                  return sorted;
-              });
+              // No need to correct transcript for individual segments
+              // Each segment has its own audio and exact duration
+              // Transcript was already inserted with correct times
           }
       };
       

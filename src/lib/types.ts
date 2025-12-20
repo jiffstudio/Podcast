@@ -25,9 +25,16 @@ export interface AiInteractionRequest {
 }
 
 export interface AiInteractionResponse {
-    insertionPoint: number; // Where in the original timeline to insert
-    generatedAudioUrl: string;
-    generatedDuration: number;
-    transcript: TranscriptLine[];
+    segments: {
+        audioUrl: string;
+        duration: number;
+        transcript: {
+            speaker: string;
+            content: string;
+            timestamp: string;
+            type: string;
+        };
+    }[];
+    debugLogs: string[];
 }
 
