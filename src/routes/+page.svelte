@@ -106,10 +106,18 @@
           }
 
           lastActiveBlockId = activeBlock.id;
-      } else if (time >= $duration && $duration > 0) {
-           // End
-           isPlaying.set(false);
-       }
+      } else {
+           // No active block found, but still handle play/pause
+           if (playing && mainAudio && mainAudio.paused) {
+               mainAudio.play();
+           } else if (!playing && mainAudio && !mainAudio.paused) {
+               mainAudio.pause();
+           }
+           
+           if (time >= $duration && $duration > 0) {
+               isPlaying.set(false);
+           }
+      }
        
        // Update tracker (careful not to loop)
        if (!needsSeek) lastSyncTime = time; 
