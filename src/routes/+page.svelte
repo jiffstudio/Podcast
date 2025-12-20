@@ -8,7 +8,7 @@
   import { 
     blocks, transcript, currentTime, duration, isPlaying, 
     playbackSpeed, userQuery, isThinking, showInput,
-    type TimelineBlock 
+    recalcGlobals, type TimelineBlock 
   } from '$lib/stores/player';
 
   // --- Audio State ---
@@ -108,10 +108,10 @@
       } else if (time >= $duration && $duration > 0) {
            // End
            isPlaying.set(false);
-      }
-      
-      // Update tracker (careful not to loop)
-      if (!needsSeek) lastSyncTime = time; 
+       }
+       
+       // Update tracker (careful not to loop)
+       if (!needsSeek) lastSyncTime = time; 
   }
 
   function pauseAllAi() {
@@ -143,7 +143,7 @@
            if (localTime >= currentBlock.sourceStart + currentBlock.duration - 0.1) {
                checkTransition();
            }
-      }
+       }
   }
 
   function syncRealPlayer(block: TimelineBlock, globalTime: number) {
@@ -182,17 +182,6 @@
       }
   }
 
-  function recalcGlobals() {
-      let t = 0;
-      const newBlocks = $blocks.map(b => {
-          const nb = { ...b, globalStart: t };
-          t += b.duration;
-          return nb;
-      });
-      blocks.set(newBlocks);
-      duration.set(t);
-  }
-
   // --- Logic: Ask Question (Pure Logic) ---
   async function handleAskQuestion() {
       const q = $userQuery;
@@ -214,6 +203,8 @@
                if (nextLine) insertAt = nextLine.seconds;
                else insertAt = dur;
            }
+
+           console.log(`[Insert] User asked at ${time.toFixed(2)}, inserting at ${insertAt.toFixed(2)}`);
 
            const response = await handleUserQuery({
                currentTimestamp: insertAt,
@@ -319,6 +310,14 @@
       });
       recalcGlobals();
   }
+
+  // --- Interactions ---
+  const togglePlay = () => isPlaying.update(v => !v);
+  const seek = (time: number) => currentTime.set(Math.max(0, Math.min($duration, time)));
+  const changeSpeed = () => {
+    const speeds = [1.0, 1.25, 1.5, 2.0, 0.5];
+    playbackSpeed.update(s => speeds[(speeds.indexOf(s) + 1) % speeds.length]);
+  };
 </script>
 
 <div class="flex flex-col h-screen bg-[#1a2e1a] text-[#e0f0e0] font-sans overflow-hidden select-none">
@@ -339,8 +338,13 @@
 
   <div class="flex-1 flex overflow-hidden relative">
      <PodcastInfo />
-     <TranscriptView />
+     <TranscriptView onSeek={seek} />
   </div>
 
-  <PlayerBar onAskQuestion={handleAskQuestion} />
+  <PlayerBar 
+    onTogglePlay={togglePlay}
+    onSeek={seek}
+    onChangeSpeed={changeSpeed}
+    onAskQuestion={handleAskQuestion}
+  />
 </div>

@@ -84,37 +84,13 @@ export const POST: RequestHandler = async ({ request }) => {
         // 3. Combine and return metadata
         const combinedBuffer = Buffer.concat([hostAudio, timAudio]);
         
-        // Accurate duration calculation
+        // Accurate duration calculation using mp3-duration
         log("Calculating accurate duration...");
-        let hostSeconds = 0;
-        let timSeconds = 0;
-        let totalSeconds = 0;
-
-        try {
-            // Helper to get duration safely
-            const safeGetDuration = async (buf: Buffer) => {
-                try {
-                    return await getDuration(buf);
-                } catch (err: any) {
-                    log(`mp3-duration error: ${err.message}. Falling back to byte estimation.`);
-                    // Fallback: MP3 128kbps approx estimation
-                    // 128kbps = 16000 bytes/sec
-                    return buf.length / 16000;
-                }
-            };
-
-            hostSeconds = await safeGetDuration(hostAudio);
-            timSeconds = await safeGetDuration(timAudio);
-            totalSeconds = await safeGetDuration(combinedBuffer);
-        } catch (calcErr: any) {
-            log(`Duration calculation failed entirely: ${calcErr.message}`);
-            // Last resort fallback
-            hostSeconds = hostAudio.length / 16000;
-            timSeconds = timAudio.length / 16000;
-            totalSeconds = combinedBuffer.length / 16000;
-        }
+        const hostSeconds = await getDuration(hostAudio);
+        const timSeconds = await getDuration(timAudio);
+        const totalSeconds = await getDuration(combinedBuffer);
         
-        log(`Durations: Host=${hostSeconds.toFixed(2)}s, Tim=${timSeconds.toFixed(2)}s, Total=${totalSeconds.toFixed(2)}s`);
+        log(`Accurate durations: Host=${hostSeconds}s, Tim=${timSeconds}s, Total=${totalSeconds}s`);
 
         return json({
             generatedAudioUrl: `data:audio/mp3;base64,${combinedBuffer.toString('base64')}`,
