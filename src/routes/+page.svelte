@@ -263,8 +263,10 @@
               
               totalDuration.update(d => d + diff);
               
+              // Only shift transcript lines AFTER this AI segment
+              const aiSegmentEnd = seg.virtualEnd; // Already updated above
               transcript.update(ts => ts.map(l => 
-                  l.seconds > seg.virtualStart ? { ...l, seconds: l.seconds + diff } : l
+                  l.seconds >= aiSegmentEnd ? { ...l, seconds: l.seconds + diff } : l
               ));
           }
       };
